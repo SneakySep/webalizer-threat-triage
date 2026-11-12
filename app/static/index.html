@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Check a link or domain against security vendor reputation data and get a clear, plain-English answer before you open it."
+    />
+    <meta name="theme-color" content="#f2f6f1" />
+    <title>Webalizer — Check a link before you click</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Webalizer home">
+        <svg class="brand-mark" viewBox="0 0 44 44" aria-hidden="true">
+          <circle class="brand-mark__disc" cx="22" cy="22" r="21" />
+          <circle class="brand-mark__ring" cx="22" cy="22" r="14" />
+          <circle class="brand-mark__ring" cx="22" cy="22" r="8" />
+          <path class="brand-mark__sweep" d="M22 22L34.5 14.5" />
+          <circle class="brand-mark__dot" cx="29.5" cy="17" r="2.4" />
+        </svg>
+        <span class="brand-copy">
+          <span class="brand-name">webalizer</span>
+          <span class="brand-sub">link check</span>
+        </span>
+      </a>
+
+      <div class="header-meta">
+        <span class="live-pill">
+          <span class="live-dot" aria-hidden="true"></span>
+          Live vendor data
+        </span>
+        <a class="header-link" href="/docs">API</a>
+      </div>
+    </header>
+
+    <main id="main" class="page-shell">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-rule"></span> Link safety, minus the jargon</p>
+          <h1 id="hero-title" class="hero-title">
+            Before you click,<br />
+            <em>know the ground.</em>
+          </h1>
+          <p class="hero-lede">
+            Paste a link or domain. We check its reputation with security vendors, then tell you
+            in plain English whether to open it.
+          </p>
+        </div>
+
+        <div class="hero-scope" aria-hidden="true">
+          <div class="scope">
+            <span class="scope-ring scope-ring--outer"></span>
+            <span class="scope-ring scope-ring--mid"></span>
+            <span class="scope-ring scope-ring--inner"></span>
+            <span class="scope-axis scope-axis--x"></span>
+            <span class="scope-axis scope-axis--y"></span>
+            <span class="scope-sweep"></span>
+            <span class="scope-ping scope-ping--one"></span>
+            <span class="scope-ping scope-ping--two"></span>
+            <span class="scope-ping scope-ping--three"></span>
+            <span class="scope-core"></span>
+            <span class="scope-label scope-label--top">reputation</span>
+            <span class="scope-label scope-label--right">live</span>
+            <span class="scope-label scope-label--bottom">many vendors</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <div class="main-column">
+          <section class="check-panel" aria-labelledby="check-title">
+            <div class="panel-heading">
+              <h2 id="check-title">Check a link</h2>
+              <p class="panel-note">
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="M6.5 8V6a3.5 3.5 0 1 1 7 0v2" />
+                  <rect x="4.5" y="8" width="11" height="8.5" rx="2" />
+                  <path d="M10 11.5v2" />
+                </svg>
+                Results are kept for faster repeat checks.
+              </p>
+            </div>
+
+            <form id="scan-form" novalidate>
+              <label class="visually-hidden" for="target-input">Link or domain to check</label>
+              <div class="input-shell" id="input-shell">
+                <span class="input-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M10 13.5a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.6 1.6" />
+                    <path d="M14 10.5a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.6-1.6" />
+                  </svg>
+                </span>
+                <input
+                  id="target-input"
+                  name="target"
+                  type="text"
+                  inputmode="url"
+                  autocomplete="url"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  placeholder="example.com or https://…"
+                  aria-describedby="input-hint form-error"
+                  maxlength="4096"
+                  required
+                />
+                <button id="scan-button" class="button button--primary" type="submit">
+                  <span class="button-label">Check it</span>
+                  <svg class="button-arrow" viewBox="0 0 20 20" aria-hidden="true">
+                    <path d="M4 10h11M11 5l5 5-5 5" />
+                  </svg>
+                </button>
+              </div>
+
+              <div class="form-foot">
+                <p id="input-hint" class="input-hint">Works with full web addresses and bare domains.</p>
+                <div class="examples" aria-label="Example links to check">
+                  <span class="examples-label">Try</span>
+                  <button class="example-chip" type="button" data-target="example.com">example.com</button>
+                  <button class="example-chip" type="button" data-target="wikipedia.org">wikipedia.org</button>
+                </div>
+              </div>
+
+              <p id="form-error" class="form-error" role="alert" hidden></p>
+            </form>
+          </section>
+
+          <div id="result-stage" class="result-stage">
+            <section class="signals-card" id="signals-card" aria-labelledby="signals-title">
+              <div class="signals-intro">
+                <p class="section-kicker">The short version</p>
+                <h2 id="signals-title">One click can hide a lot.</h2>
+                <p>
+                  Scammers borrow names and logos you already trust. A quick reputation check
+                  gives you a second opinion before you hand over a password or payment.
+                </p>
+              </div>
+              <ol class="signal-list">
+                <li>
+                  <span class="signal-index">01</span>
+                  <div>
+                    <h3>A borrowed identity</h3>
+                    <p>A familiar brand name wrapped around an address that isn’t theirs.</p>
+                  </div>
+                </li>
+                <li>
+                  <span class="signal-index">02</span>
+                  <div>
+                    <h3>A known attack page</h3>
+                    <p>Links already reported for phishing, scams, or malicious downloads.</p>
+                  </div>
+                </li>
+                <li>
+                  <span class="signal-index">03</span>
+                  <div>
+                    <h3>An unproven newcomer</h3>
+                    <p>A site too new or too quiet for vendors to vouch for yet.</p>
+                  </div>
+                </li>
+              </ol>
+            </section>
+
+            <section
+              class="progress-card"
+              id="scan-progress"
+              aria-labelledby="progress-title"
+              hidden
+            >
+              <div class="progress-visual" aria-hidden="true">
+                <div class="mini-scope">
+                  <span class="mini-scope__ring"></span>
+                  <span class="mini-scope__ring mini-scope__ring--inner"></span>
+                  <span class="mini-scope__sweep"></span>
+                  <span class="mini-scope__dot"></span>
+                </div>
+              </div>
+              <div class="progress-copy">
+                <p class="section-kicker">Checking now</p>
+                <h2 id="progress-title">Reading the signals…</h2>
+                <p class="progress-target" id="progress-target"></p>
+                <div
+                  class="progress-track"
+                  id="progress-track"
+                  role="progressbar"
+                  aria-label="Scan progress"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="8"
+                >
+                  <span class="progress-fill" id="progress-fill"></span>
+                </div>
+                <ol class="progress-steps">
+                  <li id="step-1" class="is-active"><span></span>Looking up the domain</li>
+                  <li id="step-2"><span></span>Asking security vendors</li>
+                  <li id="step-3"><span></span>Writing your result</li>
+                </ol>
+                <button id="cancel-button" class="text-button" type="button">Start over</button>
+              </div>
+            </section>
+
+            <section
+              class="result-card"
+              id="result-card"
+              aria-labelledby="verdict-title"
+              tabindex="-1"
+              hidden
+            >
+              <div class="result-topline">
+                <span class="verdict-badge" id="verdict-badge">
+                  <span class="verdict-symbol" id="verdict-symbol" aria-hidden="true">✓</span>
+                  <span id="verdict-label">Looks safe</span>
+                </span>
+                <button id="new-scan-button" class="text-button" type="button">Check another</button>
+              </div>
+
+              <div class="result-hero">
+                <div class="verdict-copy">
+                  <p class="section-kicker" id="result-kicker">Clear signal</p>
+                  <h2 id="verdict-title">This link looks clean.</h2>
+                  <p class="verdict-description" id="verdict-description"></p>
+                  <p class="checked-target" id="result-target"></p>
+                </div>
+
+                <div class="score-block">
+                  <p class="score-label">Security vendors that flagged it</p>
+                  <p class="score-value">
+                    <span id="detection-count">0</span><span class="score-total" id="score-total">/ 0</span>
+                  </p>
+                  <div class="score-bar" aria-hidden="true"><span id="score-fill"></span></div>
+                  <p class="score-note" id="score-note"></p>
+                </div>
+              </div>
+
+              <div class="action-panel">
+                <h3 id="action-title">What to do now</h3>
+                <ul class="action-list" id="action-list"></ul>
+              </div>
+
+              <details class="tech-details" id="tech-details">
+                <summary>
+                  <span>Show the technical evidence</span>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5 10 14l7-6.5" /></svg>
+                </summary>
+                <div class="tech-body">
+                  <dl class="tech-grid">
+                    <div><dt>Risk score</dt><dd id="tech-risk">—</dd></div>
+                    <div><dt>Detection ratio</dt><dd id="tech-ratio">—</dd></div>
+                    <div><dt>Target type</dt><dd id="tech-type">—</dd></div>
+                    <div><dt>Last scanned</dt><dd id="tech-scan-date">—</dd></div>
+                  </dl>
+
+                  <section class="tech-section">
+                    <h4>Vendor signals</h4>
+                    <div class="engine-stats" id="engine-stats"></div>
+                  </section>
+
+                  <section class="tech-section" id="detections-section" hidden>
+                    <h4>Flagged by</h4>
+                    <ul class="detection-list" id="detections-list"></ul>
+                  </section>
+
+                  <section class="tech-section" id="categories-section" hidden>
+                    <h4>Categories</h4>
+                    <ul class="tag-list" id="categories-list"></ul>
+                  </section>
+
+                  <section class="tech-section" id="dns-section" hidden>
+                    <h4>DNS records</h4>
+                    <ul class="dns-list" id="dns-list"></ul>
+                  </section>
+                </div>
+              </details>
+
+              <div class="result-footer">
+                <span id="result-source"></span>
+                <span id="result-timestamp"></span>
+              </div>
+            </section>
+
+            <section class="error-card" id="error-card" role="alert" hidden>
+              <p class="section-kicker">That didn’t work</p>
+              <h2 id="error-title">We hit a snag.</h2>
+              <p id="error-message"></p>
+              <div class="error-actions">
+                <button id="error-retry-button" class="button button--primary" type="button">
+                  Try again
+                </button>
+                <button id="error-dismiss-button" class="text-button" type="button">Dismiss</button>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <aside class="side-column" aria-label="Recent activity and context">
+          <section class="recent-panel" aria-labelledby="recent-title">
+            <div class="recent-heading">
+              <h2 id="recent-title">Recent checks</h2>
+              <button id="clear-history-button" class="text-button text-button--small" type="button" hidden>
+                Clear
+              </button>
+            </div>
+            <div class="recent-empty" id="recent-empty">
+              <span class="recent-empty-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="8.5" />
+                  <path d="M12 7.5V12l3 2" />
+                </svg>
+              </span>
+              <p>Nothing here yet. Your last few checks will land here, on this device.</p>
+            </div>
+            <ul class="recent-list" id="recent-list"></ul>
+            <p class="recent-foot">Saved in this browser only.</p>
+          </section>
+
+          <section class="trust-panel" aria-labelledby="trust-title">
+            <p class="section-kicker">Behind the verdict</p>
+            <h2 id="trust-title">Many voices. One clear read.</h2>
+            <p>
+              We combine reputation signals from a large network of security vendors—so one odd
+              opinion doesn’t decide the answer on its own.
+            </p>
+            <div class="trust-stat">
+              <strong>70+</strong>
+              <span>security engines can contribute signals</span>
+            </div>
+            <p class="trust-note">No check is perfect. Stay careful with sensitive accounts.</p>
+          </section>
+        </aside>
+      </div>
+
+      <section class="how-panel" aria-labelledby="how-title">
+        <div class="how-heading">
+          <p class="section-kicker">How it works</p>
+          <h2 id="how-title">From “is this safe?” to a straight answer.</h2>
+        </div>
+        <ol class="how-steps">
+          <li>
+            <span class="how-number">01</span>
+            <h3>Paste it</h3>
+            <p>Drop in the whole link or just the domain. No account or app needed.</p>
+          </li>
+          <li>
+            <span class="how-number">02</span>
+            <h3>We look around</h3>
+            <p>The address is checked against vendor reputation data and recorded signals.</p>
+          </li>
+          <li>
+            <span class="how-number">03</span>
+            <h3>You get the read</h3>
+            <p>A plain-language verdict, the evidence behind it, and what to do next.</p>
+          </li>
+        </ol>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <span class="brand-name">webalizer</span>
+        <span>Know the ground before you click.</span>
+      </div>
+      <p class="footer-note">
+        Reputation data from VirusTotal. No tool can promise perfect safety.
+      </p>
+      <nav class="footer-nav" aria-label="Footer">
+        <a href="/docs">API docs</a>
+        <a href="https://github.com/SneakySep/webalizer-threat-triage">GitHub</a>
+      </nav>
+    </footer>
+
+    <dialog id="key-dialog" class="key-dialog" aria-labelledby="key-title">
+      <form id="key-form" novalidate>
+        <p class="section-kicker">Access required</p>
+        <h2 id="key-title">Enter the access key</h2>
+        <p class="dialog-copy">
+          This Webalizer instance is protected. The key stays in this browser tab and is sent only
+          to this API.
+        </p>
+        <label for="api-key-input">API key</label>
+        <input id="api-key-input" type="password" autocomplete="off" required />
+        <p id="key-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="key-cancel-button" class="text-button" type="button">Cancel</button>
+          <button class="button button--primary" type="submit">
+            Continue
+            <svg class="button-arrow" viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M4 10h11M11 5l5 5-5 5" />
+            </svg>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <p id="live-status" class="visually-hidden" aria-live="polite"></p>
+  </body>
+</html>

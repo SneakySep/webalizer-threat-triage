@@ -54,6 +54,8 @@ URL analysis flow, normalization, persistence, and cache population.
   categories, DNS records, and scan timestamp.
 - Historical reports in PostgreSQL with JSONB raw and normalized payloads.
 - Consistent JSON error envelope, optional API-key auth, and health checks.
+- Dependency-free browser UI with plain-language verdicts, evidence drill-down,
+  recent checks, and an access-key prompt for protected instances.
 - Unit and contract tests with mocked VirusTotal, Redis, and database access.
 
 ## Project layout
@@ -63,7 +65,7 @@ URL analysis flow, normalization, persistence, and cache population.
   workflows/ci.yml              CI: lint, tests, Compose, image, scripts
   dependabot.yml                dependency update automation
 app/
-  main.py                       FastAPI app, lifespan, health routes
+  main.py                       FastAPI app, lifespan, health and UI routes
   config.py                     Pydantic Settings
   database.py                   async + sync SQLAlchemy engines
   celery_app.py                 Celery configuration and worker signals
@@ -74,6 +76,11 @@ app/
     v1/endpoints/triage.py      scan, status, report
   models/triage_report.py       triage_reports SQLAlchemy model
   schemas/triage.py             Pydantic v2 request/response schemas
+  static/
+    index.html                  Browser UI shell
+    styles.css                  Responsive visual design
+    app.js                      Scan flow, polling, verdict rendering, history
+    favicon.svg                 Browser mark
   services/
     cache.py                    Redis cache, task state, locks
     dispatcher.py               Celery task publish abstraction
@@ -133,11 +140,12 @@ tests/                          pytest suite
    `docker compose restart worker` does **not** reload `.env`; containers must be
    recreated for a new key to take effect.
 
-4. Verify readiness and open the API docs:
+4. Verify readiness and open the app:
 
    ```bash
    curl http://localhost:8000/health/ready
-   # http://localhost:8000/docs
+   # http://localhost:8000        web UI
+   # http://localhost:8000/docs   API docs
    ```
 
 Without `VT_API_KEY`, the stack still starts, but scans fail safely with
@@ -147,6 +155,27 @@ The preflight performs one real domain lookup, so it consumes one request from
 your VirusTotal quota. A `200` means the key and outbound connectivity are valid;
 `401`/`403` means the key was rejected; `429` means the key was accepted but the
 quota is exhausted.
+
+## Web UI
+
+Open <http://localhost:8000> after the stack is healthy. The page is served directly
+by FastAPI and calls the same public API as any other client.
+
+- Paste a full URL or a bare domain and get a plain-language verdict with next steps.
+- Vendor evidence—risk score, detection ratio, flagged engines, categories, and DNS
+  records—stays available under “Show the technical evidence.”
+- Recent checks are stored in the browser's `localStorage`; the server does not use
+  them for anything else.
+- If `TRIAGE_API_KEY` is set, the UI asks for the key on the first `401` and keeps it
+  in `sessionStorage` for the current tab.
+
+The frontend is plain HTML, CSS, and JavaScript with no Node build step. Its source
+is in `app/static/` and is copied into the image by the existing `Dockerfile`. After
+changing UI files locally, rebuild the API container:
+
+```bash
+docker compose up -d --build api
+```
 
 ## API
 

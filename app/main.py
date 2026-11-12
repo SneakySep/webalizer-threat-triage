@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis as AsyncRedis
 
 from app.api.v1.router import api_router
@@ -19,6 +22,7 @@ from app.services.cache import AsyncCache
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 @asynccontextmanager
@@ -63,6 +67,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(application)
     application.include_router(api_router, prefix=settings.api_v1_prefix)
+    application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @application.get("/health/live", include_in_schema=False)
     async def liveness() -> dict[str, str]:
@@ -93,12 +98,12 @@ def create_app() -> FastAPI:
         return {"status": "ok" if ready else "degraded", "checks": checks}
 
     @application.get("/", include_in_schema=False)
-    async def index() -> dict[str, str]:
-        return {
-            "service": settings.app_name,
-            "version": settings.app_version,
-            "docs": "/docs" if settings.docs_enabled else "disabled",
-        }
+    async def index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+    @application.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> FileResponse:
+        return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
 
     return application
 
