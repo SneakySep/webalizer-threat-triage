@@ -36,10 +36,16 @@ async def require_api_key(
     x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     settings: Settings = Depends(get_settings),
 ) -> None:
-    expected = settings.triage_api_key_value
-    if not expected:
+    expected_keys = settings.triage_api_key_values.values()
+    if not expected_keys:
         return
-    if x_api_key is None or not secrets.compare_digest(x_api_key, expected):
+
+    valid = False
+    if x_api_key is not None:
+        for expected in expected_keys:
+            if secrets.compare_digest(x_api_key, expected):
+                valid = True
+    if not valid:
         raise AppError(
             401,
             "UNAUTHORIZED",

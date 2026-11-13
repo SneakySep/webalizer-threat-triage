@@ -53,11 +53,15 @@ URL analysis flow, normalization, persistence, and cache population.
 - Normalized, UI-ready reports: risk score, verdict, confidence, engine stats,
   detections, categories, DNS records, and scan timestamp.
 - Historical reports in PostgreSQL with JSONB raw and normalized payloads.
-- Task-scoped report idempotency and a configurable retention window.
-- Per-client scan throttling and a force-refresh cooldown.
-- Consistent JSON error envelope, optional API-key auth, and health checks.
+- Paginated report history, permalinks, deletion, and a configurable retention
+  window with scheduled pruning.
+- Task-scoped report idempotency and per-client scan throttling.
+- Consistent JSON error envelope with request IDs, optional API-key auth, and
+  health checks.
+- Security headers, a strict CSP for the app UI, and Prometheus metrics.
 - Dependency-free browser UI with plain-language verdicts, evidence drill-down,
-  recent checks, and an access-key prompt for protected instances.
+  server-backed history, report links, JSON download, and an access-key prompt
+  for protected instances.
 - Unit and contract tests with mocked VirusTotal, Redis, and database access,
   plus opt-in PostgreSQL/Redis integration and Playwright browser suites.
 
@@ -66,17 +70,20 @@ URL analysis flow, normalization, persistence, and cache population.
 ```text
 .github/
   workflows/ci.yml              CI: lint, tests, Compose, image, scripts
+  workflows/codeql.yml          CodeQL security analysis
   dependabot.yml                dependency update automation
 app/
-  main.py                       FastAPI app, lifespan, health and UI routes
+  main.py                       FastAPI app, lifespan, health, metrics, UI routes
   config.py                     Pydantic Settings
   database.py                   async + sync SQLAlchemy engines
-  celery_app.py                 Celery configuration and worker signals
+  celery_app.py                 Celery configuration, beat schedule, signals
   errors.py                     error envelope and exception handlers
+  middleware.py                 request IDs, security headers, HTTP metrics
+  metrics.py                    Prometheus counters and histograms
   api/
     deps.py                     DB/cache/auth dependencies
     v1/router.py
-    v1/endpoints/triage.py      scan, status, report
+    v1/endpoints/triage.py      scan, status, report list/read/delete
   models/triage_report.py       triage_reports SQLAlchemy model
   schemas/triage.py             Pydantic v2 request/response schemas
   static/
@@ -92,9 +99,12 @@ app/
     retention.py                batched report pruning
     triage.py                   worker orchestration
     virustotal.py               VT v3 HTTP client and error mapping
-  tasks/vt_worker.py            Celery task and retry handling
+  tasks/
+    vt_worker.py                Celery task and retry handling
+    maintenance.py              scheduled report pruning
   utils/helpers.py              validation, hashing, cache keys
 alembic/                        database migrations
+docs/OPERATIONS.md              Deployment and incident-response runbook
 scripts/
   prune_reports.py              Delete reports past the retention window
   verify_vt_key.py              VirusTotal key/connectivity preflight
@@ -172,10 +182,11 @@ by FastAPI and calls the same public API as any other client.
 - Paste a full URL or a bare domain and get a plain-language verdict with next steps.
 - Vendor evidence—risk score, detection ratio, flagged engines, categories, and DNS
   records—stays available under “Show the technical evidence.”
-- Recent checks are stored in the browser's `localStorage`; the server does not use
-  them for anything else.
-- If `TRIAGE_API_KEY` is set, the UI asks for the key on the first `401` and keeps it
-  in `sessionStorage` for the current tab.
+- Recent checks load from the server-backed report history when the API is
+  reachable, with `localStorage` as a fallback. Each result has a permalink
+  (`/r/<report_id>`), a copy-link button, and a JSON download.
+- If `TRIAGE_API_KEY` or `TRIAGE_API_KEYS` is set, the UI asks for the key on the
+  first `401` and keeps it in `sessionStorage` for the current tab.
 
 The frontend is plain HTML, CSS, and JavaScript with no Node build step. Its source
 is in `app/static/` and is copied into the image by the existing `Dockerfile`. After
@@ -262,12 +273,45 @@ curl "http://localhost:8000/api/v1/triage/report/<report_id>?include_raw=true"
 ```
 
 The raw VirusTotal JSON is omitted by default to keep responses small and
-UI-focused.
+UI-focused. The UI permalink for the same report is `/r/<report_id>`.
+
+### List stored reports
+
+```bash
+curl "http://localhost:8000/api/v1/triage/reports?limit=10&offset=0"
+curl "http://localhost:8000/api/v1/triage/reports?target=example.com&verdict=malicious"
+```
+
+`limit` is capped at 50. Each item contains the report ID, target, verdict,
+confidence, risk score, detection ratio, creation time, and a UI `permalink`.
+The response also includes `total`, `limit`, and `offset` for pagination.
+
+### Delete a stored report
+
+```bash
+curl -X DELETE http://localhost:8000/api/v1/triage/reports/<report_id>
+```
+
+Returns `204` on success and invalidates the target's Redis cache entry so the
+next scan performs fresh VirusTotal work. Use this for data-removal requests.
+Unknown IDs return `404 REPORT_NOT_FOUND`.
 
 ### Optional authentication
 
-Set `TRIAGE_API_KEY` to require `X-API-Key` on all `/api/v1/triage/*` endpoints.
-Leave it empty to disable authentication (local development).
+Set `TRIAGE_API_KEY` to require `X-API-Key` on all `/api/v1/triage/*` endpoints
+and `/metrics`. Leave it empty to disable authentication (local development).
+
+For key rotation or per-device keys, set `TRIAGE_API_KEYS` to a JSON array of
+labelled keys:
+
+```bash
+TRIAGE_API_KEYS='[{"name": "laptop", "key": "..."}, {"name": "phone", "key": "..."}]'
+```
+
+Both settings are accepted at the same time; the legacy `TRIAGE_API_KEY` is
+treated as a key named `default`. Each key gets its own scan rate-limit bucket,
+so one key exhausting its limit does not block another. Key values are never
+logged.
 
 ## Normalized result
 
@@ -343,8 +387,8 @@ retries and released on success or terminal failure. Task state is stored under
 ### Scan submission limits
 
 Every `POST /api/v1/triage/scan` is throttled before any VirusTotal work starts.
-Limits apply per API key when `TRIAGE_API_KEY` is configured, otherwise per
-client IP:
+Limits apply per API key when `TRIAGE_API_KEY` or `TRIAGE_API_KEYS` is
+configured, otherwise per client IP:
 
 - `SCAN_RATE_LIMIT_PER_MINUTE` (default `30`)
 - `SCAN_RATE_LIMIT_PER_HOUR` (default `300`)
@@ -377,6 +421,27 @@ docker compose run --rm api python -m scripts.prune_reports --days 90 --batch-si
 Set `STORE_RAW_VT_RESPONSE=false` to persist only normalized report data. The
 default is `true` for compatibility with existing report responses.
 
+The Compose stack runs a `beat` service that prunes expired reports daily at
+03:15 UTC. The manual commands above remain available for one-off cleanup.
+
+## Observability
+
+Every response includes `X-Request-ID`. A safe client-supplied ID is reused;
+otherwise the API generates one. Error envelopes include the same value as
+`error.request_id`, which makes support reports traceable without exposing
+internal details.
+
+Prometheus metrics are available at `/metrics` when `METRICS_ENABLED=true`
+(the default). The endpoint exposes HTTP request counts and latency plus scan
+submission outcomes. When API-key auth is enabled, scrapers must send the same
+`X-API-Key` header. Set `METRICS_ENABLED=false` to return `404` instead.
+
+App and static responses include `X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and a
+strict `Content-Security-Policy`. `/docs`, `/redoc`, and `/openapi.json` keep the
+other headers but skip CSP so Swagger and ReDoc can load their CDN assets.
+`Strict-Transport-Security` is added when `ENVIRONMENT=production`.
+
 ## Error handling
 
 All API errors use one envelope:
@@ -385,7 +450,8 @@ All API errors use one envelope:
 {
   "error": {
     "code": "INVALID_TARGET",
-    "message": "only http:// and https:// URLs are supported"
+    "message": "only http:// and https:// URLs are supported",
+    "request_id": "7f2c9a1b4d8e4c6f9a0b1c2d3e4f5a6b"
   }
 }
 ```
@@ -433,8 +499,8 @@ ruff check app tests alembic scripts
 The default suite uses fakeredis, an in-memory fake dispatcher, mocked
 VirusTotal HTTP responses, and fake database sessions, so no live VT key or
 infrastructure is required. CI runs it on Python 3.11 and 3.12 with an 80%
-coverage floor, validates the Compose file, builds the container image, and
-parses the PowerShell setup helper.
+coverage floor, checks browser JavaScript syntax, validates the Compose file,
+builds the container image, and parses the PowerShell setup helper.
 
 Real-service and browser suites are opt-in:
 
@@ -455,8 +521,12 @@ browser suite against Chromium.
 
 ## Production notes
 
-- Put the API behind TLS and a reverse proxy; set `TRIAGE_API_KEY` for machine
-  callers and configure `CORS_ORIGINS` explicitly.
+- Put the API behind TLS and a reverse proxy; set `TRIAGE_API_KEY` or
+  `TRIAGE_API_KEYS` for machine callers and configure `CORS_ORIGINS` explicitly.
+  Rotate by adding a new labelled key, updating clients, then removing the old
+  entry.
+- Scrape `/metrics` over the private network or with an API key, and keep
+  `METRICS_ENABLED=false` on instances that do not need it.
 - `--proxy-headers` only trusts `FORWARDED_ALLOW_IPS` (default `127.0.0.1`).
   Set it to your proxy address or network when the proxy is in another
   container, otherwise rate limits fall back to the proxy's address.
@@ -469,6 +539,8 @@ browser suite against Chromium.
   VT request rate under the configured quota.
 - Never commit `.env` or any API key. Rotate a credential immediately if it is
   exposed.
+- See [docs/OPERATIONS.md](docs/OPERATIONS.md) for metrics scraping, backups,
+  key rotation, proxy hardening, and branch protection.
 
 ## Security
 

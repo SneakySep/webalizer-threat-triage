@@ -54,6 +54,9 @@
     dnsList: $("dns-list"),
     resultSource: $("result-source"),
     resultTimestamp: $("result-timestamp"),
+    copyLink: $("copy-link-button"),
+    downloadReport: $("download-report-button"),
+    copyStatus: $("copy-status"),
     newScanButton: $("new-scan-button"),
     errorCard: $("error-card"),
     errorTitle: $("error-title"),
@@ -62,6 +65,7 @@
     errorDismiss: $("error-dismiss-button"),
     recentList: $("recent-list"),
     recentEmpty: $("recent-empty"),
+    recentFoot: $("recent-foot"),
     clearHistory: $("clear-history-button"),
     keyDialog: $("key-dialog"),
     keyForm: $("key-form"),
@@ -180,6 +184,9 @@
   let pendingKeyAction = null;
   let pendingKeyCancel = null;
   let history = loadHistory();
+  let usingServerHistory = false;
+  let currentResult = null;
+  let currentReportId = null;
 
   class ApiError extends Error {
     constructor(message, { status = 0, code = "REQUEST_FAILED", details = null } = {}) {
@@ -512,6 +519,12 @@
         : 0;
     const total = Number(stats.total) || (ratio ? ratio.total : 0);
 
+    currentResult = result;
+    currentReportId = meta.reportId || result.report_id || null;
+    elements.copyLink.hidden = !currentReportId;
+    elements.downloadReport.hidden = false;
+    elements.copyStatus.textContent = "";
+
     elements.resultCard.dataset.verdict = verdict;
     elements.verdictSymbol.textContent = content.symbol;
     elements.verdictLabel.textContent = content.badge;
@@ -658,6 +671,104 @@
     announce(`${content.badge}. ${content.title}`);
   }
 
+  function permalinkFor(reportId) {
+    return `${window.location.origin}/r/${reportId}`;
+  }
+
+  async function copyText(value) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } finally {
+      area.remove();
+    }
+    return copied;
+  }
+
+  async function copyReportLink() {
+    if (!currentReportId) {
+      return;
+    }
+    const url = permalinkFor(currentReportId);
+    try {
+      const copied = await copyText(url);
+      elements.copyStatus.textContent = copied ? "Link copied." : url;
+      announce(copied ? "Report link copied." : `Report link: ${url}`);
+    } catch {
+      elements.copyStatus.textContent = url;
+      announce(`Report link: ${url}`);
+    }
+  }
+
+  function downloadReport() {
+    if (!currentResult) {
+      return;
+    }
+    const safeTarget = String(currentResult.target || "report").replace(/[^a-z0-9.-]+/gi, "-");
+    const blob = new Blob([JSON.stringify(currentResult, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `webalizer-${safeTarget}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    announce("Report downloaded.");
+  }
+
+  async function loadReportById(reportId, target = "") {
+    activeToken += 1;
+    stopPolling();
+    setBusy(false);
+    hide(elements.errorCard);
+    hide(elements.resultCard);
+    hide(elements.signalsCard);
+    show(elements.progressCard);
+    elements.progressTitle.textContent = "Loading the saved result…";
+    elements.progressTarget.textContent = target;
+    elements.progressFill.style.width = "70%";
+    elements.progressTrack.setAttribute("aria-valuenow", "70");
+
+    try {
+      const { data } = await request(`/report/${reportId}`);
+      const resolvedTarget = data.target || target;
+      lastScanTarget = resolvedTarget;
+      elements.input.value = resolvedTarget;
+      renderResult(data, {
+        fromHistory: true,
+        reportId,
+        createdAt: data.created_at,
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        openKeyDialog(
+          () => loadReportById(reportId, target),
+          () => authRequiredError(target),
+        );
+        return;
+      }
+      showError(
+        "We couldn’t load that saved result.",
+        error.message || "The report may have been removed or the database is unavailable.",
+        { action: () => startScan(target) },
+      );
+    }
+  }
+
   function saveHistoryItem(result, meta = {}) {
     const target = result.target || lastScanTarget;
     if (!target) {
@@ -709,6 +820,44 @@
     return contentForResult({ verdict, confidence }).badge;
   }
 
+  function historyEntryFromSummary(item) {
+    return {
+      target: item.target,
+      verdict: item.verdict || "unknown",
+      confidence: item.confidence || null,
+      risk_score: item.risk_score,
+      detection_ratio: item.detection_ratio,
+      report_id: item.report_id || null,
+      task_id: null,
+      cached: true,
+      savedAt: item.created_at,
+      result: null,
+    };
+  }
+
+  async function loadServerHistory() {
+    try {
+      const { data } = await request(`/reports?limit=${MAX_HISTORY}`);
+      if (!data || !Array.isArray(data.items)) {
+        return;
+      }
+      if (data.items.length === 0 && history.length > 0) {
+        usingServerHistory = false;
+        elements.recentFoot.textContent = "Saved in this browser only.";
+        return;
+      }
+      usingServerHistory = true;
+      history = data.items.map(historyEntryFromSummary);
+      elements.recentFoot.textContent = history.length
+        ? "Saved on this server. Newest first."
+        : "No checks saved yet.";
+      renderHistory();
+    } catch {
+      usingServerHistory = false;
+      elements.recentFoot.textContent = "Saved in this browser only.";
+    }
+  }
+
   function renderHistory() {
     elements.recentList.replaceChildren();
 
@@ -719,7 +868,7 @@
     }
 
     hide(elements.recentEmpty);
-    show(elements.clearHistory);
+    elements.clearHistory.hidden = usingServerHistory;
 
     history.forEach((entry) => {
       const listItem = document.createElement("li");
@@ -748,6 +897,10 @@
 
       button.append(dot, copy, ratio);
       button.addEventListener("click", () => {
+        if (entry.report_id && !entry.result) {
+          loadReportById(entry.report_id, entry.target);
+          return;
+        }
         activeToken += 1;
         stopPolling();
         setBusy(false);
@@ -1103,6 +1256,9 @@
     reveal(document.querySelector(".check-panel"));
   });
 
+  elements.copyLink.addEventListener("click", copyReportLink);
+  elements.downloadReport.addEventListener("click", downloadReport);
+
   elements.errorDismiss.addEventListener("click", () => {
     restoreIdle();
     elements.input.focus();
@@ -1143,4 +1299,10 @@
   });
 
   renderHistory();
+  loadServerHistory();
+
+  const permalinkMatch = window.location.pathname.match(/^\/r\/([0-9a-fA-F-]{36})$/);
+  if (permalinkMatch) {
+    loadReportById(permalinkMatch[1]);
+  }
 })();

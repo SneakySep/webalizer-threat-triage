@@ -16,6 +16,7 @@ from pydantic import SecretStr
 
 from app.api.deps import get_cache, get_session, get_settings
 from app.api.v1.endpoints.triage import _client_identity
+from app.config import ApiKeyConfig
 from app.config import get_settings as load_settings
 from app.main import create_app
 from app.models.triage_report import TriageReport
@@ -300,7 +301,19 @@ def test_rate_limit_identity_prefers_api_key() -> None:
     assert "secret-key" not in identity
     assert identity != _client_identity(request_with("another-key"), secured)
 
-    open_settings = load_settings().model_copy(update={"triage_api_key": None})
+    labelled = load_settings().model_copy(
+        update={
+            "triage_api_key": None,
+            "triage_api_keys": [
+                ApiKeyConfig(name="laptop", key=SecretStr("laptop-key")),
+            ],
+        }
+    )
+    assert _client_identity(request_with("laptop-key"), labelled).startswith("key:")
+
+    open_settings = load_settings().model_copy(
+        update={"triage_api_key": None, "triage_api_keys": []}
+    )
     assert _client_identity(request_with("secret-key"), open_settings) == "ip:203.0.113.10"
 
 
@@ -411,6 +424,155 @@ async def test_missing_report_returns_404(
     response = await api_harness.client.get(f"/api/v1/triage/report/{report.id}")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "REPORT_NOT_FOUND"
+
+
+class FakeScalarResult:
+    def __init__(self, rows: list[TriageReport]) -> None:
+        self.rows = rows
+
+    def all(self) -> list[TriageReport]:
+        return self.rows
+
+
+class FakeReportSession:
+    def __init__(self, reports: list[TriageReport]) -> None:
+        self.reports = reports
+        self.deleted: list[TriageReport] = []
+        self.committed = False
+        self.rolled_back = False
+
+    async def scalar(self, _statement: Any) -> int:
+        return len(self.reports)
+
+    async def scalars(self, _statement: Any) -> FakeScalarResult:
+        return FakeScalarResult(self.reports)
+
+    async def get(self, _model: Any, report_id: uuid.UUID) -> TriageReport | None:
+        return next((report for report in self.reports if report.id == report_id), None)
+
+    async def delete(self, report: TriageReport) -> None:
+        self.deleted.append(report)
+        self.reports.remove(report)
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+async def test_reports_are_listed_with_pagination_metadata(
+    api_harness: ApiHarness,
+    normalized_domain_result: TriageResult,
+) -> None:
+    report = _report(normalized_domain_result)
+    session = FakeReportSession([report])
+
+    async def override_session():
+        yield session
+
+    api_harness.app.dependency_overrides[get_session] = override_session
+    response = await api_harness.client.get("/api/v1/triage/reports?limit=5&offset=0")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["limit"] == 5
+    assert body["offset"] == 0
+    assert body["items"][0]["report_id"] == str(report.id)
+    assert body["items"][0]["confidence"] == "medium"
+    assert body["items"][0]["permalink"] == f"/r/{report.id}"
+
+
+async def test_report_list_falls_back_to_columns_for_malformed_json(
+    api_harness: ApiHarness,
+    normalized_domain_result: TriageResult,
+) -> None:
+    report = _report(normalized_domain_result)
+    report.normalized_data = {}
+    session = FakeReportSession([report])
+
+    async def override_session():
+        yield session
+
+    api_harness.app.dependency_overrides[get_session] = override_session
+    response = await api_harness.client.get("/api/v1/triage/reports")
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["confidence"] is None
+    assert item["verdict"] == "malicious"
+    assert item["target_type"] == "domain"
+
+
+async def test_report_list_rejects_an_invalid_target_filter(
+    api_harness: ApiHarness,
+) -> None:
+    response = await api_harness.client.get("/api/v1/triage/reports?target=ftp://example.com")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_TARGET"
+
+
+async def test_report_deletion_removes_the_row_and_cache_entry(
+    api_harness: ApiHarness,
+    normalized_domain_result: TriageResult,
+) -> None:
+    report = _report(normalized_domain_result)
+    session = FakeReportSession([report])
+    cache_key = compute_cache_key(TargetType.DOMAIN, report.target)
+    await api_harness.cache.redis.set(cache_key, "cached")
+
+    async def override_session():
+        yield session
+
+    api_harness.app.dependency_overrides[get_session] = override_session
+    response = await api_harness.client.delete(f"/api/v1/triage/reports/{report.id}")
+
+    assert response.status_code == 204
+    assert session.committed is True
+    assert session.deleted == [report]
+    assert await api_harness.cache.redis.get(cache_key) is None
+
+
+async def test_deleting_a_missing_report_returns_404(api_harness: ApiHarness) -> None:
+    session = FakeReportSession([])
+
+    async def override_session():
+        yield session
+
+    api_harness.app.dependency_overrides[get_session] = override_session
+    response = await api_harness.client.delete(f"/api/v1/triage/reports/{uuid.uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "REPORT_NOT_FOUND"
+
+
+async def test_labelled_api_keys_are_accepted(api_harness: ApiHarness) -> None:
+    secure_settings = load_settings().model_copy(
+        update={
+            "triage_api_keys": [
+                ApiKeyConfig(name="laptop", key=SecretStr("laptop-key")),
+                ApiKeyConfig(name="phone", key=SecretStr("phone-key")),
+            ]
+        }
+    )
+    api_harness.app.dependency_overrides[get_settings] = lambda: secure_settings
+
+    accepted = await api_harness.client.post(
+        "/api/v1/triage/scan",
+        headers={"X-API-Key": "phone-key"},
+        json={"target": "labelled-key.example"},
+    )
+    rejected = await api_harness.client.post(
+        "/api/v1/triage/scan",
+        headers={"X-API-Key": "wrong-key"},
+        json={"target": "labelled-key.example"},
+    )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 401
+    assert rejected.json()["error"]["code"] == "UNAUTHORIZED"
 
 
 async def test_optional_api_key_protection(api_harness: ApiHarness) -> None:

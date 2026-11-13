@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import worker_process_init, worker_ready
 
 from app.config import get_settings
@@ -17,7 +18,7 @@ celery_app = Celery(
     "webalizer",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.vt_worker"],
+    include=["app.tasks.vt_worker", "app.tasks.maintenance"],
 )
 
 celery_app.conf.update(
@@ -40,6 +41,12 @@ celery_app.conf.update(
     task_routes={"triage.scan": {"queue": "vt"}},
     task_annotations={
         "triage.scan": {"rate_limit": settings.celery_task_rate_limit},
+    },
+    beat_schedule={
+        "prune-expired-reports": {
+            "task": "triage.prune_reports",
+            "schedule": crontab(hour=3, minute=15),
+        }
     },
 )
 

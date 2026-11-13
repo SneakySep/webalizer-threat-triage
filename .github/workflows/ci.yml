@@ -50,6 +50,9 @@ jobs:
       - name: Ruff format check
         run: ruff format --check app tests alembic scripts
 
+      - name: Check browser JavaScript syntax
+        run: node --check app/static/app.js
+
       - name: Run tests with coverage
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 

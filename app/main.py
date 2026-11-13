@@ -7,17 +7,21 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from redis.asyncio import Redis as AsyncRedis
 
+from app.api.deps import require_api_key
 from app.api.v1.router import api_router
 from app.config import get_settings
 from app.database import check_database, close_database
 from app.errors import register_exception_handlers
+from app.metrics import CONTENT_TYPE_LATEST, generate_latest
+from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.services.cache import AsyncCache
 
 logger = logging.getLogger(__name__)
@@ -61,9 +65,16 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=settings.cors_origins,
             allow_credentials=False,
-            allow_methods=["GET", "POST"],
+            allow_methods=["GET", "POST", "DELETE"],
             allow_headers=["Content-Type", "X-API-Key"],
+            expose_headers=["X-Request-ID"],
         )
+
+    application.add_middleware(
+        SecurityHeadersMiddleware,
+        environment=settings.environment,
+    )
+    application.add_middleware(RequestContextMiddleware)
 
     register_exception_handlers(application)
     application.include_router(api_router, prefix=settings.api_v1_prefix)
@@ -96,6 +107,20 @@ def create_app() -> FastAPI:
         if not ready:
             response.status_code = 503
         return {"status": "ok" if ready else "degraded", "checks": checks}
+
+    @application.get(
+        "/metrics",
+        include_in_schema=False,
+        dependencies=[Depends(require_api_key)],
+    )
+    async def metrics() -> Response:
+        if not settings.metrics_enabled:
+            return Response(status_code=404)
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    @application.get("/r/{report_id}", include_in_schema=False)
+    async def report_permalink(report_id: UUID) -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
 
     @application.get("/", include_in_schema=False)
     async def index() -> FileResponse:

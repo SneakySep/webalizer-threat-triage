@@ -141,3 +141,26 @@ class TriageReportResponse(TriageResult):
     report_id: UUID
     created_at: datetime
     raw_vt_response: dict[str, Any] | None = None
+
+
+class ReportSummary(BaseModel):
+    """Compact representation used by the report history list."""
+
+    report_id: UUID
+    target: str
+    target_type: TargetType
+    risk_score: float
+    detection_ratio: str
+    verdict: Verdict
+    confidence: VerdictConfidence | None = None
+    created_at: datetime
+    permalink: str
+
+
+class ReportListResponse(BaseModel):
+    """Paginated report history."""
+
+    items: list[ReportSummary]
+    total: int
+    limit: int
+    offset: int

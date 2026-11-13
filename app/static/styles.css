@@ -1434,6 +1434,30 @@ svg {
   letter-spacing: 0.03em;
 }
 
+.result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+.result-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+}
+
+.copy-status {
+  color: var(--accent-deep);
+  font-family: var(--font-body);
+  font-size: 0.68rem;
+  letter-spacing: 0;
+}
+
+.copy-status:empty {
+  display: none;
+}
+
 /* Errors */
 
 .error-card {

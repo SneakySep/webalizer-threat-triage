@@ -279,8 +279,29 @@
               </details>
 
               <div class="result-footer">
-                <span id="result-source"></span>
-                <span id="result-timestamp"></span>
+                <div class="result-meta">
+                  <span id="result-source"></span>
+                  <span id="result-timestamp"></span>
+                </div>
+                <div class="result-tools">
+                  <button
+                    id="copy-link-button"
+                    class="text-button text-button--small"
+                    type="button"
+                    hidden
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    id="download-report-button"
+                    class="text-button text-button--small"
+                    type="button"
+                    hidden
+                  >
+                    Download JSON
+                  </button>
+                  <span id="copy-status" class="copy-status" role="status" aria-live="polite"></span>
+                </div>
               </div>
             </section>
 
@@ -316,7 +337,7 @@
               <p>Nothing here yet. Your last few checks will land here, on this device.</p>
             </div>
             <ul class="recent-list" id="recent-list"></ul>
-            <p class="recent-foot">Saved in this browser only.</p>
+            <p class="recent-foot" id="recent-foot">Saved in this browser only.</p>
           </section>
 
           <section class="trust-panel" aria-labelledby="trust-title">

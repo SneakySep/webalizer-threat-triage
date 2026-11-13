@@ -5,8 +5,30 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ApiKeyConfig(BaseModel):
+    """A labelled API key accepted by the optional auth layer."""
+
+    name: str = Field(min_length=1, max_length=64)
+    key: SecretStr
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("API key name must not be blank")
+        return value
+
+    @field_validator("key")
+    @classmethod
+    def require_key(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("API key value must not be blank")
+        return value
 
 
 class Settings(BaseSettings):
@@ -25,15 +47,18 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Webalizer Threat Triage"
-    app_version: str = "1.0.0"
+    app_version: str = "1.1.0"
     environment: Literal["development", "test", "staging", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"
     docs_enabled: bool = True
+    metrics_enabled: bool = True
     api_v1_prefix: str = "/api/v1"
 
     # Optional static API-key protection for triage endpoints. Disabled when empty.
+    # TRIAGE_API_KEYS accepts a JSON array of {"name": "...", "key": "..."} entries.
     triage_api_key: SecretStr | None = None
+    triage_api_keys: list[ApiKeyConfig] = Field(default_factory=list)
     cors_origins: list[str] = Field(default_factory=list)
 
     # Persistence
@@ -96,6 +121,13 @@ class Settings(BaseSettings):
             )
         if self.environment == "production" and not self.vt_api_key.get_secret_value():
             raise ValueError("VT_API_KEY is required when ENVIRONMENT=production")
+        names = [entry.name for entry in self.triage_api_keys]
+        if len(names) != len(set(names)):
+            raise ValueError("TRIAGE_API_KEYS contains duplicate names")
+        if self.triage_api_key_value and "default" in names:
+            raise ValueError(
+                "TRIAGE_API_KEYS name 'default' is reserved when TRIAGE_API_KEY is set"
+            )
         return self
 
     @property
@@ -105,6 +137,17 @@ class Settings(BaseSettings):
     @property
     def triage_api_key_value(self) -> str:
         return self.triage_api_key.get_secret_value().strip() if self.triage_api_key else ""
+
+    @property
+    def triage_api_key_values(self) -> dict[str, str]:
+        """Return every accepted key, including the legacy single-key setting."""
+
+        values: dict[str, str] = {}
+        if self.triage_api_key_value:
+            values["default"] = self.triage_api_key_value
+        for entry in self.triage_api_keys:
+            values[entry.name] = entry.key.get_secret_value().strip()
+        return values
 
     @property
     def celery_task_rate_limit(self) -> str:

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi import status as http_status
 from pydantic import ValidationError
 from redis.exceptions import RedisError
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,13 +20,17 @@ from app.config import Settings
 from app.errors import AppError
 from app.models.triage_report import TriageReport
 from app.schemas.triage import (
+    ReportListResponse,
+    ReportSummary,
     ScanRequest,
     ScanResponse,
+    TargetType,
     TaskError,
     TaskState,
     TaskStatusResponse,
     TriageReportResponse,
     TriageResult,
+    Verdict,
 )
 from app.services.cache import AsyncCache, TaskRecord
 from app.services.dispatcher import TaskDispatcher
@@ -309,6 +314,136 @@ async def get_report(
     )
 
 
+@router.get(
+    "/reports",
+    response_model=ReportListResponse,
+    summary="List stored triage reports",
+)
+async def list_reports(
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    target: str | None = Query(default=None, max_length=4096),
+    verdict: Verdict | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> ReportListResponse:
+    filters = []
+    if target is not None:
+        try:
+            parsed = normalize_target(target)
+        except InvalidTargetError as exc:
+            raise AppError(422, "INVALID_TARGET", str(exc)) from exc
+        filters.append(TriageReport.target == parsed.target)
+    if verdict is not None:
+        filters.append(TriageReport.verdict == verdict.value)
+
+    count_statement = select(func.count()).select_from(TriageReport)
+    list_statement = (
+        select(TriageReport)
+        .order_by(TriageReport.created_at.desc(), TriageReport.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    for condition in filters:
+        count_statement = count_statement.where(condition)
+        list_statement = list_statement.where(condition)
+
+    try:
+        total = int(await session.scalar(count_statement) or 0)
+        rows = list((await session.scalars(list_statement)).all())
+    except SQLAlchemyError as exc:
+        logger.exception("Database error while listing reports")
+        raise AppError(
+            503,
+            "DATABASE_UNAVAILABLE",
+            "The report database is unavailable. Try again shortly.",
+        ) from exc
+
+    return ReportListResponse(
+        items=[_report_summary(report) for report in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.delete(
+    "/reports/{report_id}",
+    status_code=http_status.HTTP_204_NO_CONTENT,
+    summary="Delete a stored triage report",
+)
+async def delete_report(
+    report_id: UUID,
+    cache: AsyncCache = Depends(get_cache),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    try:
+        report = await session.get(TriageReport, report_id)
+    except SQLAlchemyError as exc:
+        logger.exception("Database error while loading report %s for deletion", report_id)
+        raise AppError(
+            503,
+            "DATABASE_UNAVAILABLE",
+            "The report database is unavailable. Try again shortly.",
+        ) from exc
+
+    if report is None:
+        raise AppError(404, "REPORT_NOT_FOUND", "The requested report was not found.")
+
+    target_type = TargetType(report.target_type)
+    target = report.target
+    try:
+        await session.delete(report)
+        await session.commit()
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        logger.exception("Database error while deleting report %s", report_id)
+        raise AppError(
+            503,
+            "DATABASE_UNAVAILABLE",
+            "The report database is unavailable. Try again shortly.",
+        ) from exc
+
+    try:
+        await cache.delete_cached(target_type, target)
+    except RedisError:
+        logger.warning("Unable to invalidate cache for deleted report %s", report_id, exc_info=True)
+
+    return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+
+def _report_summary(report: TriageReport) -> ReportSummary:
+    try:
+        normalized = TriageResult.model_validate(report.normalized_data)
+    except ValidationError:
+        logger.warning("Stored report %s is malformed; using columns", report.id, exc_info=True)
+        normalized = None
+
+    if normalized is not None:
+        target_type = normalized.target_type
+        verdict = normalized.verdict
+        risk_score = normalized.risk_score
+        detection_ratio = normalized.detection_ratio
+        confidence = normalized.confidence
+    else:
+        target_type = TargetType(report.target_type)
+        verdict = Verdict(report.verdict)
+        risk_score = float(report.risk_score)
+        detection_ratio = ""
+        confidence = None
+
+    return ReportSummary(
+        report_id=report.id,
+        target=report.target,
+        target_type=target_type,
+        risk_score=risk_score,
+        detection_ratio=detection_ratio,
+        verdict=verdict,
+        confidence=confidence,
+        created_at=report.created_at,
+        permalink=f"/r/{report.id}",
+    )
+
+
 async def _enforce_scan_rate_limit(
     request: Request,
     cache: AsyncCache,
@@ -338,7 +473,7 @@ async def _enforce_scan_rate_limit(
 def _client_identity(request: Request, settings: Settings) -> str:
     """Key limits by API key when auth is on, otherwise by client address."""
 
-    if settings.triage_api_key_value:
+    if settings.triage_api_key_values:
         api_key = request.headers.get("X-API-Key")
         if api_key:
             digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:32]

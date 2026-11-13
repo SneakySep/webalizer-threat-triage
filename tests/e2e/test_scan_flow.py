@@ -67,6 +67,17 @@ def _mock_scan(page: Page, result: dict[str, Any]) -> None:
     page.route("**/api/v1/triage/scan", fulfill)
 
 
+def _mock_empty_server_history(page: Page) -> None:
+    def fulfill(route: Any) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"items": [], "total": 0, "limit": 6, "offset": 0}),
+        )
+
+    page.route("**/api/v1/triage/reports*", fulfill)
+
+
 def _run_scan(page: Page, base_url: str, target: str = "flagged.example") -> None:
     page.goto(base_url)
     page.get_by_label("Link or domain to check").fill(target)
@@ -95,6 +106,7 @@ def test_low_confidence_label_is_kept_in_saved_history(
     e2e_base_url: str,
 ) -> None:
     _mock_scan(page, _result())
+    _mock_empty_server_history(page)
 
     _run_scan(page, e2e_base_url)
     expect(page.locator(".recent-meta").first).to_contain_text("Worth a look")
@@ -104,6 +116,125 @@ def test_low_confidence_label_is_kept_in_saved_history(
     page.locator(".recent-item").first.click()
     expect(page.locator("#verdict-label")).to_have_text("Worth a look")
     expect(page.locator("#tech-confidence")).to_have_text("Low")
+
+
+def test_report_link_is_copied_with_a_permalink(
+    page: Page,
+    e2e_base_url: str,
+) -> None:
+    _mock_scan(page, _result())
+    page.add_init_script(
+        "navigator.clipboard.writeText = async (value) => { window.__copied = value; };"
+    )
+
+    _run_scan(page, e2e_base_url)
+    page.locator("#copy-link-button").click()
+
+    expect(page.locator("#copy-status")).to_have_text("Link copied.")
+    copied = page.evaluate("window.__copied")
+    assert copied.startswith(f"{e2e_base_url}/r/")
+
+
+def test_server_history_renders_and_opens_a_stored_report(
+    page: Page,
+    e2e_base_url: str,
+) -> None:
+    report_id = str(uuid.uuid4())
+    summary = {
+        "report_id": report_id,
+        "target": "flagged.example",
+        "target_type": "domain",
+        "risk_score": 1.11,
+        "detection_ratio": "1/90",
+        "verdict": "malicious",
+        "confidence": "low",
+        "created_at": "2026-11-13T12:00:00Z",
+        "permalink": f"/r/{report_id}",
+    }
+    report = {
+        **_result(),
+        "report_id": report_id,
+        "created_at": "2026-11-13T12:00:00Z",
+        "raw_vt_response": None,
+    }
+
+    def fulfill_list(route: Any) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"items": [summary], "total": 1, "limit": 6, "offset": 0}),
+        )
+
+    def fulfill_report(route: Any) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(report),
+        )
+
+    page.route("**/api/v1/triage/reports*", fulfill_list)
+    page.route(f"**/api/v1/triage/report/{report_id}", fulfill_report)
+    page.goto(e2e_base_url)
+
+    expect(page.locator("#recent-foot")).to_have_text("Saved on this server. Newest first.")
+    page.locator(".recent-item").first.click()
+
+    expect(page.locator("#result-card")).to_be_visible()
+    expect(page.locator("#verdict-label")).to_have_text("Worth a look")
+
+
+def test_report_permalink_loads_the_saved_result(
+    page: Page,
+    e2e_base_url: str,
+) -> None:
+    report_id = str(uuid.uuid4())
+    payload = {
+        **_result(),
+        "report_id": report_id,
+        "created_at": "2026-11-13T12:00:00Z",
+        "raw_vt_response": None,
+    }
+
+    def fulfill(route: Any) -> None:
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(payload),
+        )
+
+    page.route(f"**/api/v1/triage/report/{report_id}", fulfill)
+    page.goto(f"{e2e_base_url}/r/{report_id}")
+
+    expect(page.locator("#result-card")).to_be_visible()
+    expect(page.locator("#verdict-label")).to_have_text("Worth a look")
+    expect(page.locator("#result-source")).to_have_text("Saved result")
+
+
+def test_mobile_layout_has_no_horizontal_overflow(
+    page: Page,
+    e2e_base_url: str,
+) -> None:
+    page.set_viewport_size({"width": 390, "height": 844})
+    _mock_scan(page, _result())
+
+    _run_scan(page, e2e_base_url)
+
+    overflow = page.evaluate(
+        "document.documentElement.scrollWidth > document.documentElement.clientWidth"
+    )
+    assert overflow is False
+
+
+def test_skip_link_receives_keyboard_focus(
+    page: Page,
+    e2e_base_url: str,
+) -> None:
+    page.goto(e2e_base_url)
+    page.keyboard.press("Tab")
+
+    skip_link = page.locator(".skip-link")
+    expect(skip_link).to_be_focused()
+    assert skip_link.evaluate("(element) => getComputedStyle(element).transform") != "none"
 
 
 def test_unknown_result_shows_a_no_data_state(

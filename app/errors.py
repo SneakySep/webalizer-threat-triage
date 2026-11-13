@@ -37,25 +37,37 @@ def error_payload(
     code: str,
     message: str,
     details: Any | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     error: dict[str, Any] = {"code": code, "message": message}
     if details is not None:
         error["details"] = details
+    if request_id:
+        error["request_id"] = request_id
     return {"error": error}
+
+
+def _request_id(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
-    async def handle_app_error(_request: Request, exc: AppError) -> JSONResponse:
+    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_payload(exc.code, exc.message, exc.details),
+            content=error_payload(
+                exc.code,
+                exc.message,
+                exc.details,
+                request_id=_request_id(request),
+            ),
             headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
-        _request: Request,
+        request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
         details = [
@@ -72,19 +84,24 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "VALIDATION_ERROR",
                 "Request validation failed",
                 details,
+                request_id=_request_id(request),
             ),
         )
 
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_error(
-        _request: Request,
+        request: Request,
         exc: StarletteHTTPException,
     ) -> JSONResponse:
         code = "NOT_FOUND" if exc.status_code == 404 else "HTTP_ERROR"
         detail = exc.detail if isinstance(exc.detail, str) else "HTTP error"
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_payload(code, detail),
+            content=error_payload(
+                code,
+                detail,
+                request_id=_request_id(request),
+            ),
             headers=exc.headers,
         )
 
@@ -101,5 +118,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             content=error_payload(
                 "INTERNAL_ERROR",
                 "An unexpected server error occurred",
+                request_id=_request_id(request),
             ),
         )
