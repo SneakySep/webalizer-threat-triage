@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi import status as http_status
 from pydantic import ValidationError
 from redis.exceptions import RedisError
@@ -47,11 +48,22 @@ router = APIRouter(prefix="/triage", tags=["triage"])
 )
 async def scan_target(
     payload: ScanRequest,
+    request: Request,
     response: Response,
     cache: AsyncCache = Depends(get_cache),
     dispatcher: TaskDispatcher = Depends(get_task_dispatcher),
     settings: Settings = Depends(get_settings),
 ) -> ScanResponse:
+    try:
+        await _enforce_scan_rate_limit(request, cache, settings)
+    except RedisError as exc:
+        logger.exception("Redis operation failed while checking the scan rate limit")
+        raise AppError(
+            503,
+            "CACHE_UNAVAILABLE",
+            "The cache service is unavailable. Try again shortly.",
+        ) from exc
+
     try:
         parsed = normalize_target(payload.target)
     except InvalidTargetError as exc:
@@ -60,6 +72,13 @@ async def scan_target(
             "INVALID_TARGET",
             str(exc),
         ) from exc
+
+    cache_key = compute_cache_key(parsed.target_type, parsed.target)
+    task_id = uuid4()
+    cooldown_key = f"triage:force-refresh:{cache_key}"
+    lock_held = False
+    cooldown_set = False
+    status_created = False
 
     try:
         if not payload.force_refresh:
@@ -75,8 +94,6 @@ async def scan_target(
                     poll_url=_poll_url(cached.task_id, settings.api_v1_prefix),
                 )
 
-        cache_key = compute_cache_key(parsed.target_type, parsed.target)
-        task_id = uuid4()
         acquired = await cache.acquire_lock(
             cache_key,
             str(task_id),
@@ -107,12 +124,31 @@ async def scan_target(
                     "An identical scan is already in progress.",
                 )
 
+        lock_held = True
+
+        if payload.force_refresh and settings.force_refresh_cooldown_seconds > 0:
+            allowed = await cache.set_if_absent(
+                cooldown_key,
+                ttl_seconds=settings.force_refresh_cooldown_seconds,
+            )
+            if not allowed:
+                retry_after = max(1, await cache.get_ttl(cooldown_key))
+                raise AppError(
+                    429,
+                    "FORCE_REFRESH_COOLDOWN",
+                    "This target was refreshed recently. Try again shortly.",
+                    details={"retry_after_seconds": retry_after},
+                    headers={"Retry-After": str(retry_after)},
+                )
+            cooldown_set = True
+
         # A scan may have completed between the first cache read and lock
         # acquisition. Re-check to avoid a duplicate VirusTotal request.
         if not payload.force_refresh:
             cached = await cache.get_cached(parsed.target_type, parsed.target)
             if cached is not None:
-                await cache.release_lock(cache_key, str(task_id))
+                await _release_scan_lock(cache, cache_key, task_id)
+                lock_held = False
                 response.status_code = http_status.HTTP_200_OK
                 return ScanResponse(
                     task_id=cached.task_id,
@@ -137,6 +173,7 @@ async def scan_target(
             record,
             ttl_seconds=settings.task_status_ttl_seconds,
         )
+        status_created = True
 
         try:
             await asyncio.to_thread(
@@ -148,11 +185,6 @@ async def scan_target(
             )
         except Exception as exc:
             logger.exception("Failed to enqueue task %s", task_id)
-            try:
-                await cache.release_lock(cache_key, str(task_id))
-                await cache.delete_task_status(task_id)
-            except RedisError:
-                logger.warning("Failed to clean up task %s after enqueue error", task_id)
             raise AppError(
                 503,
                 "QUEUE_UNAVAILABLE",
@@ -167,13 +199,24 @@ async def scan_target(
             poll_url=_poll_url(task_id, settings.api_v1_prefix),
         )
 
-    except RedisError as exc:
-        logger.exception("Redis operation failed during scan submission")
-        raise AppError(
-            503,
-            "CACHE_UNAVAILABLE",
-            "The cache service is unavailable. Try again shortly.",
-        ) from exc
+    except Exception as exc:
+        await _cleanup_scan_submission(
+            cache,
+            cache_key=cache_key,
+            task_id=task_id,
+            cooldown_key=cooldown_key,
+            lock_held=lock_held,
+            cooldown_set=cooldown_set,
+            status_created=status_created,
+        )
+        if isinstance(exc, RedisError):
+            logger.exception("Redis operation failed during scan submission")
+            raise AppError(
+                503,
+                "CACHE_UNAVAILABLE",
+                "The cache service is unavailable. Try again shortly.",
+            ) from exc
+        raise
 
 
 @router.get(
@@ -264,6 +307,83 @@ async def get_report(
         created_at=report.created_at,
         raw_vt_response=report.raw_vt_response if include_raw else None,
     )
+
+
+async def _enforce_scan_rate_limit(
+    request: Request,
+    cache: AsyncCache,
+    settings: Settings,
+) -> None:
+    identity = _client_identity(request, settings)
+    windows = (
+        ("minute", settings.scan_rate_limit_per_minute, 60),
+        ("hour", settings.scan_rate_limit_per_hour, 3600),
+    )
+    for name, limit, window_seconds in windows:
+        count, ttl = await cache.increment_window(
+            f"triage:rate:scan:{name}:{identity}",
+            window_seconds=window_seconds,
+        )
+        if count > limit:
+            retry_after = max(1, ttl)
+            raise AppError(
+                429,
+                "RATE_LIMITED",
+                "Too many scan requests. Try again shortly.",
+                details={"limit": limit, "window_seconds": window_seconds},
+                headers={"Retry-After": str(retry_after)},
+            )
+
+
+def _client_identity(request: Request, settings: Settings) -> str:
+    """Key limits by API key when auth is on, otherwise by client address."""
+
+    if settings.triage_api_key_value:
+        api_key = request.headers.get("X-API-Key")
+        if api_key:
+            digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:32]
+            return f"key:{digest}"
+    host = request.client.host if request.client is not None else "unknown"
+    return f"ip:{host}"
+
+
+async def _release_scan_lock(cache: AsyncCache, cache_key: str, task_id: UUID) -> None:
+    try:
+        await cache.release_lock(cache_key, str(task_id))
+    except RedisError:
+        logger.warning("Unable to release scan lock for task %s", task_id, exc_info=True)
+
+
+async def _cleanup_scan_submission(
+    cache: AsyncCache,
+    *,
+    cache_key: str,
+    task_id: UUID,
+    cooldown_key: str,
+    lock_held: bool,
+    cooldown_set: bool,
+    status_created: bool,
+) -> None:
+    if lock_held:
+        await _release_scan_lock(cache, cache_key, task_id)
+    if cooldown_set:
+        try:
+            await cache.delete_key(cooldown_key)
+        except RedisError:
+            logger.warning(
+                "Unable to clear force-refresh cooldown for task %s",
+                task_id,
+                exc_info=True,
+            )
+    if status_created:
+        try:
+            await cache.delete_task_status(task_id)
+        except RedisError:
+            logger.warning(
+                "Unable to delete task status for task %s",
+                task_id,
+                exc_info=True,
+            )
 
 
 _ACTIVE_TASK_STATES = {

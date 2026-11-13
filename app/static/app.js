@@ -42,6 +42,7 @@
     techDetails: $("tech-details"),
     techRisk: $("tech-risk"),
     techRatio: $("tech-ratio"),
+    techConfidence: $("tech-confidence"),
     techType: $("tech-type"),
     techScanDate: $("tech-scan-date"),
     engineStats: $("engine-stats"),
@@ -124,6 +125,53 @@
       ],
     },
   };
+
+  const maliciousConfidenceContent = {
+    high: verdictContent.malicious,
+    medium: {
+      badge: "Be careful",
+      symbol: "!",
+      kicker: "Several flags",
+      title: "Several vendors flagged this link.",
+      description:
+        "More than one security vendor raised a concern about this address. That’s a meaningful warning, even if it isn’t a confirmed attack.",
+      actions: [
+        "Avoid signing in, paying, or downloading anything from the page.",
+        "If you know the sender, confirm the link with them another way.",
+        "Reach the service through its official app or a typed address instead.",
+      ],
+    },
+    low: {
+      badge: "Worth a look",
+      symbol: "!",
+      kicker: "One vendor flag",
+      title: "One vendor flagged this link.",
+      description:
+        "A single security vendor raised a concern. That can happen with a false positive, but it’s still worth checking before you trust the page.",
+      actions: [
+        "Look closely at the address and the sender before you continue.",
+        "Don’t enter passwords, card numbers, or personal details yet.",
+        "If anything feels off, close it and reach the service another way.",
+      ],
+    },
+  };
+
+  function contentForResult(result) {
+    const verdict = Object.hasOwn(verdictContent, result.verdict) ? result.verdict : "unknown";
+    const confidence = typeof result.confidence === "string" ? result.confidence.toLowerCase() : "";
+    if (verdict === "malicious" && Object.hasOwn(maliciousConfidenceContent, confidence)) {
+      return maliciousConfidenceContent[confidence];
+    }
+    return verdictContent[verdict];
+  }
+
+  function confidenceLabel(result) {
+    const confidence = typeof result.confidence === "string" ? result.confidence.toLowerCase() : "";
+    if (confidence === "high" || confidence === "medium" || confidence === "low") {
+      return confidence.charAt(0).toUpperCase() + confidence.slice(1);
+    }
+    return result.verdict === "unknown" ? "Not enough data" : "Not provided";
+  }
 
   let activeToken = 0;
   let pollTimer = null;
@@ -450,11 +498,15 @@
 
   function renderResult(result, meta = {}) {
     const verdict = Object.hasOwn(verdictContent, result.verdict) ? result.verdict : "unknown";
-    const content = verdictContent[verdict];
+    const content = contentForResult(result);
     const stats = result.engine_stats || {};
     const ratio = ratioFromText(result.detection_ratio);
-    const flagged = Number.isFinite(stats.malicious) || Number.isFinite(stats.suspicious)
-      ? (Number(stats.malicious) || 0) + (Number(stats.suspicious) || 0)
+    const hasBreakdown =
+      Number.isFinite(stats.malicious) || Number.isFinite(stats.suspicious);
+    const malicious = hasBreakdown ? Number(stats.malicious) || 0 : 0;
+    const suspicious = hasBreakdown ? Number(stats.suspicious) || 0 : 0;
+    const flagged = hasBreakdown
+      ? malicious + suspicious
       : ratio
         ? ratio.flagged
         : 0;
@@ -485,6 +537,18 @@
       elements.scoreNote.textContent = "No vendor statistics were returned for this target.";
     } else if (flagged === 0) {
       elements.scoreNote.textContent = `No vendor flags across ${formatNumber(total)} checks.`;
+    } else if (hasBreakdown) {
+      let summary;
+      if (malicious > 0 && suspicious > 0) {
+        summary =
+          `${formatNumber(malicious)} malicious and ${formatNumber(suspicious)} suspicious reports`;
+      } else if (malicious > 0) {
+        summary = `${formatNumber(malicious)} malicious ${malicious === 1 ? "report" : "reports"}`;
+      } else {
+        summary =
+          `${formatNumber(suspicious)} suspicious ${suspicious === 1 ? "report" : "reports"}`;
+      }
+      elements.scoreNote.textContent = `${summary} across ${formatNumber(total)} vendors.`;
     } else {
       elements.scoreNote.textContent = `${formatNumber(flagged)} of ${formatNumber(total)} vendors raised a flag.`;
     }
@@ -497,10 +561,15 @@
     });
 
     const roundedRisk = Number(result.risk_score);
-    elements.techRisk.textContent = Number.isFinite(roundedRisk)
+    const hasRiskData =
+      verdict !== "unknown" && Number.isFinite(roundedRisk) && result.risk_score !== null;
+    elements.techRisk.textContent = hasRiskData
       ? `${Math.round(roundedRisk * 10) / 10} / 100`
-      : "Not provided";
-    elements.techRatio.textContent = result.detection_ratio || "Not provided";
+      : "No vendor data";
+    elements.techRatio.textContent = total > 0
+      ? result.detection_ratio || `${formatNumber(flagged)} / ${formatNumber(total)}`
+      : "No vendor data";
+    elements.techConfidence.textContent = confidenceLabel(result);
     elements.techType.textContent = targetTypeLabel(result.target_type);
     elements.techScanDate.textContent = formatDate(result.scan_date, true);
 
@@ -597,6 +666,7 @@
     const item = {
       target,
       verdict: result.verdict || "unknown",
+      confidence: result.confidence || null,
       risk_score: result.risk_score,
       detection_ratio: result.detection_ratio,
       report_id: meta.reportId || result.report_id || null,
@@ -635,8 +705,8 @@
     return formatDate(value);
   }
 
-  function verdictHistoryLabel(verdict) {
-    return verdictContent[verdict]?.badge || "Unclear";
+  function verdictHistoryLabel(verdict, confidence) {
+    return contentForResult({ verdict, confidence }).badge;
   }
 
   function renderHistory() {
@@ -669,7 +739,7 @@
       target.textContent = entry.target;
       const meta = document.createElement("span");
       meta.className = "recent-meta";
-      meta.textContent = `${verdictHistoryLabel(entry.verdict)} · ${relativeTime(entry.savedAt)}`;
+      meta.textContent = `${verdictHistoryLabel(entry.verdict, entry.confidence)} · ${relativeTime(entry.savedAt)}`;
       copy.append(target, meta);
 
       const ratio = document.createElement("span");
@@ -753,6 +823,19 @@
         title: "That link doesn’t look usable.",
         message:
           "Try a normal web address, like example.com or https://example.com/page. Other address types aren’t supported.",
+      };
+    }
+    if (error.code === "FORCE_REFRESH_COOLDOWN") {
+      return {
+        title: "This link was refreshed recently.",
+        message:
+          "A fresh check was already requested for this link. Give it a few minutes before forcing another one.",
+      };
+    }
+    if (error.code === "RATE_LIMITED") {
+      return {
+        title: "Too many checks at once.",
+        message: "You’ve reached the check limit for now. Give it a minute, then try again.",
       };
     }
     if (error.status === 429) {

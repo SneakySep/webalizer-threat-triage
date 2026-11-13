@@ -13,6 +13,7 @@ from app.schemas.triage import (
     TriageResult,
     VendorVerdict,
     Verdict,
+    VerdictConfidence,
 )
 
 _DNS_TYPES = {"A", "AAAA", "MX", "NS"}
@@ -109,6 +110,7 @@ def _build_result(
         risk_score=risk_score,
         detection_ratio=detection_ratio,
         verdict=verdict,
+        confidence=_calculate_confidence(verdict, stats),
         engine_stats=stats,
         detections=_extract_detections(results),
         categories=_extract_categories(categories),
@@ -172,6 +174,35 @@ def _calculate_verdict(
     if stats.harmless + stats.undetected > 0:
         return Verdict.HARMLESS
     return Verdict.UNKNOWN
+
+
+def _calculate_confidence(
+    verdict: Verdict,
+    stats: EngineStats,
+) -> VerdictConfidence | None:
+    """Describe how much vendor evidence supports the verdict.
+
+    A single flag is useful but can be a false positive; showing confidence
+    separately lets clients keep the same verdict while softening the copy.
+    """
+
+    if verdict is Verdict.UNKNOWN:
+        return None
+    if verdict is Verdict.MALICIOUS:
+        if stats.malicious >= 3:
+            return VerdictConfidence.HIGH
+        if stats.malicious == 2 or stats.total <= 10:
+            return VerdictConfidence.MEDIUM
+        return VerdictConfidence.LOW
+    if verdict is Verdict.SUSPICIOUS:
+        if stats.suspicious >= 3:
+            return VerdictConfidence.MEDIUM
+        return VerdictConfidence.LOW
+    if stats.total >= 20:
+        return VerdictConfidence.HIGH
+    if stats.total >= 5:
+        return VerdictConfidence.MEDIUM
+    return VerdictConfidence.LOW
 
 
 def _extract_detections(results: Any) -> list[VendorVerdict]:

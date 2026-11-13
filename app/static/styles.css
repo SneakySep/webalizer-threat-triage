@@ -1266,7 +1266,7 @@ svg {
 
 .tech-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin: 0;
 }
@@ -1948,6 +1948,10 @@ svg {
 @media (max-width: 1080px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr) 300px;
+  }
+
+  .tech-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .scope {

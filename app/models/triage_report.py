@@ -7,7 +7,16 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Numeric, String, Text, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,12 +34,18 @@ class TriageReport(Base):
         Index("ix_triage_reports_target_created_at", "target", "created_at"),
         Index("ix_triage_reports_verdict", "verdict"),
         Index("ix_triage_reports_target_type", "target_type"),
+        Index("ix_triage_reports_created_at", "created_at"),
+        UniqueConstraint("task_id", name="uq_triage_reports_task_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
     )
     target: Mapped[str] = mapped_column(Text, nullable=False)
     target_type: Mapped[str] = mapped_column(String(10), nullable=False)

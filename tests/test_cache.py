@@ -85,6 +85,23 @@ async def test_async_task_status_and_locking(async_cache: AsyncCache) -> None:
     assert await async_cache.release_lock(key, "owner-a") is True
 
 
+async def test_async_rate_window_and_short_lived_markers(async_cache: AsyncCache) -> None:
+    count, ttl = await async_cache.increment_window("triage:test:window", window_seconds=60)
+    assert count == 1
+    assert 0 < ttl <= 60
+
+    count, ttl = await async_cache.increment_window("triage:test:window", window_seconds=60)
+    assert count == 2
+    assert 0 < ttl <= 60
+
+    assert await async_cache.set_if_absent("triage:test:marker", ttl_seconds=60) is True
+    assert await async_cache.set_if_absent("triage:test:marker", ttl_seconds=60) is False
+    assert 0 < await async_cache.get_ttl("triage:test:marker") <= 60
+
+    await async_cache.delete_key("triage:test:marker")
+    assert await async_cache.get_ttl("triage:test:marker") == 0
+
+
 def test_sync_cache_roundtrip_and_status(
     sync_cache: SyncCache,
     normalized_domain_result: TriageResult,

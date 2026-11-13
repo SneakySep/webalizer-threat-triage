@@ -22,6 +22,13 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 0
 """
+_RATE_WINDOW_SCRIPT = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return {current, redis.call('TTL', KEYS[1])}
+"""
 
 
 class CachedTriage(BaseModel):
@@ -123,6 +130,24 @@ class AsyncCache:
 
     async def delete_task_status(self, task_id: str | UUID) -> None:
         await self.redis.delete(status_key(task_id))
+
+    async def increment_window(self, key: str, *, window_seconds: int) -> tuple[int, int]:
+        """Increment a fixed-window counter and return (count, remaining_ttl)."""
+
+        result = await self.redis.eval(_RATE_WINDOW_SCRIPT, 1, key, window_seconds)
+        count, ttl = result
+        return int(count), max(0, int(ttl))
+
+    async def set_if_absent(self, key: str, *, ttl_seconds: int) -> bool:
+        """Set a short-lived marker, returning False when it already exists."""
+
+        return bool(await self.redis.set(key, "1", nx=True, ex=ttl_seconds))
+
+    async def get_ttl(self, key: str) -> int:
+        return max(0, int(await self.redis.ttl(key)))
+
+    async def delete_key(self, key: str) -> None:
+        await self.redis.delete(key)
 
     async def acquire_lock(self, cache_key: str, owner: str, *, ttl_seconds: int) -> bool:
         result = await self.redis.set(

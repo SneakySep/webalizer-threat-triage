@@ -10,6 +10,8 @@ from typing import Any
 from uuid import UUID
 
 from redis.exceptions import RedisError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -135,7 +137,11 @@ class TriageService:
             )
 
         self._update(status, stage="saving_report")
-        report = self._persist_report(normalized, raw_vt_response)
+        report = self._persist_report(
+            normalized,
+            raw_vt_response,
+            task_id=UUID(task_id),
+        )
 
         try:
             self.cache.set_cached(
@@ -163,18 +169,35 @@ class TriageService:
         self,
         normalized: TriageResult,
         raw_vt_response: dict[str, Any],
+        *,
+        task_id: UUID,
     ) -> TriageReport:
         report = TriageReport(
+            task_id=task_id,
             target=normalized.target,
             target_type=normalized.target_type.value,
             risk_score=Decimal(str(normalized.risk_score)),
             verdict=normalized.verdict.value,
-            raw_vt_response=raw_vt_response,
+            raw_vt_response=raw_vt_response if self.settings.store_raw_vt_response else {},
             normalized_data=normalized.model_dump(mode="json"),
         )
         with self.session_factory() as session:
             session.add(report)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.scalar(
+                    select(TriageReport).where(TriageReport.task_id == task_id)
+                )
+                if existing is None:
+                    raise
+                logger.info(
+                    "Task %s already has report %s; reusing the stored row",
+                    task_id,
+                    existing.id,
+                )
+                return existing
             session.refresh(report)
         return report
 

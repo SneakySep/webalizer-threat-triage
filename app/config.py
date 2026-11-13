@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     task_status_ttl_seconds: int = Field(default=604_800, ge=60)
     inflight_lock_ttl_seconds: int = Field(default=3_600, ge=60)
 
+    # Abuse protection and data lifecycle
+    scan_rate_limit_per_minute: int = Field(default=30, ge=1, le=600)
+    scan_rate_limit_per_hour: int = Field(default=300, ge=1, le=100_000)
+    force_refresh_cooldown_seconds: int = Field(default=300, ge=0)
+    report_retention_days: int = Field(default=180, ge=1)
+    store_raw_vt_response: bool = True
+
     # Verdict thresholds
     malicious_min_engines: int = Field(default=1, ge=0)
     suspicious_min_engines: int = Field(default=1, ge=0)
@@ -81,6 +88,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CELERY_TASK_SOFT_TIME_LIMIT_SECONDS must be less than "
                 "CELERY_TASK_TIME_LIMIT_SECONDS"
+            )
+        if self.scan_rate_limit_per_hour < self.scan_rate_limit_per_minute:
+            raise ValueError(
+                "SCAN_RATE_LIMIT_PER_HOUR must be greater than or equal to "
+                "SCAN_RATE_LIMIT_PER_MINUTE"
             )
         if self.environment == "production" and not self.vt_api_key.get_secret_value():
             raise ValueError("VT_API_KEY is required when ENVIRONMENT=production")

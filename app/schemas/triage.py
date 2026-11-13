@@ -22,6 +22,12 @@ class Verdict(StrEnum):
     UNKNOWN = "unknown"
 
 
+class VerdictConfidence(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
 class TaskState(StrEnum):
     QUEUED = "queued"
     PROCESSING = "processing"
@@ -68,6 +74,7 @@ class TriageResult(BaseModel):
     risk_score: float = Field(ge=0, le=100)
     detection_ratio: str
     verdict: Verdict
+    confidence: VerdictConfidence | None = None
     engine_stats: EngineStats
     detections: list[VendorVerdict] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)

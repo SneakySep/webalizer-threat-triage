@@ -20,6 +20,9 @@ dist/
 .coverage.*
 coverage.xml
 htmlcov/
+test-results/
+playwright-report/
+blob-report/
 
 # Logs and local databases
 *.log

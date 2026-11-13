@@ -39,6 +39,18 @@ ruff format --check app tests alembic scripts
 pytest -q
 ```
 
+The default suite mocks VirusTotal, Redis, and PostgreSQL. Real-service and
+browser suites are opt-in:
+
+```bash
+INTEGRATION_DATABASE_URL=postgresql+psycopg://triage:triage@localhost:5432/triage \
+INTEGRATION_REDIS_URL=redis://localhost:6379/15 \
+pytest -m integration -q
+
+playwright install chromium
+RUN_E2E=1 pytest -m e2e -q
+```
+
 To run the full stack:
 
 ```bash

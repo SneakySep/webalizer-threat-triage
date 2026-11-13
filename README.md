@@ -50,13 +50,16 @@ URL analysis flow, normalization, persistence, and cache population.
 - Configurable Celery rate limit plus a process-shared Redis token bucket.
 - Two-step VirusTotal URL submission and exponential-backoff polling.
 - Analysis-ID persistence across Celery retries to avoid duplicate submissions.
-- Normalized, UI-ready reports: risk score, verdict, engine stats, detections,
-  categories, DNS records, and scan timestamp.
+- Normalized, UI-ready reports: risk score, verdict, confidence, engine stats,
+  detections, categories, DNS records, and scan timestamp.
 - Historical reports in PostgreSQL with JSONB raw and normalized payloads.
+- Task-scoped report idempotency and a configurable retention window.
+- Per-client scan throttling and a force-refresh cooldown.
 - Consistent JSON error envelope, optional API-key auth, and health checks.
 - Dependency-free browser UI with plain-language verdicts, evidence drill-down,
   recent checks, and an access-key prompt for protected instances.
-- Unit and contract tests with mocked VirusTotal, Redis, and database access.
+- Unit and contract tests with mocked VirusTotal, Redis, and database access,
+  plus opt-in PostgreSQL/Redis integration and Playwright browser suites.
 
 ## Project layout
 
@@ -86,15 +89,20 @@ app/
     dispatcher.py               Celery task publish abstraction
     normalizer.py               VirusTotal JSON -> TriageResult
     rate_limit.py               global Redis token bucket
+    retention.py                batched report pruning
     triage.py                   worker orchestration
     virustotal.py               VT v3 HTTP client and error mapping
   tasks/vt_worker.py            Celery task and retry handling
   utils/helpers.py              validation, hashing, cache keys
 alembic/                        database migrations
 scripts/
+  prune_reports.py              Delete reports past the retention window
   verify_vt_key.py              VirusTotal key/connectivity preflight
   enable-live-scans.ps1         One-command live-scan setup (Windows)
-tests/                          pytest suite
+tests/
+  integration/                  Real PostgreSQL and Redis tests
+  e2e/                          Playwright browser flows
+  ...                           Unit and API contract tests
 ```
 
 ## Requirements
@@ -270,6 +278,7 @@ Leave it empty to disable authentication (local development).
   "risk_score": 2.22,
   "detection_ratio": "2/90",
   "verdict": "malicious",
+  "confidence": "medium",
   "engine_stats": {
     "malicious": 2,
     "suspicious": 1,
@@ -302,6 +311,9 @@ Leave it empty to disable authentication (local development).
   `SUSPICIOUS_MIN_ENGINES`. With no usable engine verdicts, the verdict is
   `unknown`.
 - `detections` contains only engines that returned `malicious` or `suspicious`.
+- `confidence` (`low`, `medium`, `high`, or `null` for `unknown`) describes how
+  much vendor evidence supports the verdict. It is optional so cached and stored
+  results created before this field remain valid.
 - DNS parsing is limited to A, AAAA, MX, and NS records.
 
 ## Caching and rate limiting
@@ -328,6 +340,43 @@ In-flight locks use `triage:lock:<cache_key>`. They are held across Celery
 retries and released on success or terminal failure. Task state is stored under
 `triage:status:<task_id>` for seven days by default.
 
+### Scan submission limits
+
+Every `POST /api/v1/triage/scan` is throttled before any VirusTotal work starts.
+Limits apply per API key when `TRIAGE_API_KEY` is configured, otherwise per
+client IP:
+
+- `SCAN_RATE_LIMIT_PER_MINUTE` (default `30`)
+- `SCAN_RATE_LIMIT_PER_HOUR` (default `300`)
+- `FORCE_REFRESH_COOLDOWN_SECONDS` (default `300`) per target
+
+Exceeding a window returns `429 RATE_LIMITED`; forcing another refresh too soon
+returns `429 FORCE_REFRESH_COOLDOWN`. Both include `Retry-After`. Locks, task
+status, and cooldown markers are cleaned up if enqueueing fails, so a failed
+submission does not block the next attempt.
+
+### Report lifecycle
+
+Reports are written once per Celery task. The nullable unique `task_id` column
+makes retries and duplicate worker deliveries reuse the existing row instead of
+creating a second report.
+
+`REPORT_RETENTION_DAYS` defaults to `180`. Prune expired rows in batches:
+
+```bash
+# Preview the row count
+docker compose run --rm api python -m scripts.prune_reports --dry-run
+
+# Delete rows older than the configured/default window
+docker compose run --rm api python -m scripts.prune_reports
+
+# Override the window and batch size
+docker compose run --rm api python -m scripts.prune_reports --days 90 --batch-size 500
+```
+
+Set `STORE_RAW_VT_RESPONSE=false` to persist only normalized report data. The
+default is `true` for compatibility with existing report responses.
+
 ## Error handling
 
 All API errors use one envelope:
@@ -345,6 +394,8 @@ All API errors use one envelope:
 |---|---|
 | Invalid URL/domain | `422 INVALID_TARGET` |
 | Request schema failure | `422 VALIDATION_ERROR` |
+| Scan minute/hour limit exceeded | `429 RATE_LIMITED` with `Retry-After` |
+| Forced refresh too soon | `429 FORCE_REFRESH_COOLDOWN` with `Retry-After` |
 | Unknown task/report | `404 TASK_NOT_FOUND` / `REPORT_NOT_FOUND` |
 | Redis unavailable | `503 CACHE_UNAVAILABLE` |
 | Broker publish failure | `503 QUEUE_UNAVAILABLE` |
@@ -366,7 +417,8 @@ alembic upgrade head
 ```
 
 The initial migration creates `triage_reports` with UUID primary keys, JSONB
-payloads, verdict/target-type check constraints, and history indexes.
+payloads, verdict/target-type check constraints, and history indexes. The second
+migration adds the task idempotency key and the created-at retention index.
 
 ## Tests
 
@@ -378,16 +430,36 @@ pytest -q
 ruff check app tests alembic scripts
 ```
 
-Tests use fakeredis, an in-memory fake dispatcher, mocked VirusTotal HTTP
-responses, and fake database sessions, so no live VT key or infrastructure is
-required. CI runs the suite on Python 3.11 and 3.12 with an 80% coverage floor,
-validates the Compose file, builds the container image, and parses the
-PowerShell setup helper.
+The default suite uses fakeredis, an in-memory fake dispatcher, mocked
+VirusTotal HTTP responses, and fake database sessions, so no live VT key or
+infrastructure is required. CI runs it on Python 3.11 and 3.12 with an 80%
+coverage floor, validates the Compose file, builds the container image, and
+parses the PowerShell setup helper.
+
+Real-service and browser suites are opt-in:
+
+```bash
+# PostgreSQL + Redis integration tests
+INTEGRATION_DATABASE_URL=postgresql+psycopg://triage:triage@localhost:5432/triage \
+INTEGRATION_REDIS_URL=redis://localhost:6379/15 \
+pytest -m integration -q
+
+# Playwright browser flows (starts uvicorn automatically)
+pip install -r requirements-dev.txt
+playwright install chromium
+RUN_E2E=1 pytest -m e2e -q
+```
+
+CI runs the integration suite against PostgreSQL 16 and Redis 7, and the
+browser suite against Chromium.
 
 ## Production notes
 
 - Put the API behind TLS and a reverse proxy; set `TRIAGE_API_KEY` for machine
   callers and configure `CORS_ORIGINS` explicitly.
+- `--proxy-headers` only trusts `FORWARDED_ALLOW_IPS` (default `127.0.0.1`).
+  Set it to your proxy address or network when the proxy is in another
+  container, otherwise rate limits fall back to the proxy's address.
 - PostgreSQL and Redis are not published by the provided Compose file.
 - Keep VirusTotal and database credentials in a secret manager rather than
   committing `.env`.

@@ -8,8 +8,9 @@ from typing import Any
 
 import fakeredis
 import pytest
+from sqlalchemy.exc import IntegrityError
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models.triage_report import TriageReport
 from app.schemas.triage import TargetType, TaskState, TriageResult
 from app.services.cache import CachedTriage, SyncCache, TaskRecord
@@ -72,11 +73,13 @@ def reports() -> list[TriageReport]:
 def _service(
     cache: SyncCache,
     reports: list[TriageReport],
+    *,
+    settings: Settings | None = None,
 ) -> TriageService:
     return TriageService(
         cache=cache,
         session_factory=lambda: FakeSession(reports),
-        settings=get_settings(),
+        settings=settings or get_settings(),
     )
 
 
@@ -104,6 +107,9 @@ def test_domain_scan_persists_report_and_cache(
     assert report.target == "example.com"
     assert report.target_type == "domain"
     assert report.verdict == "malicious"
+    assert report.task_id == uuid.UUID(task_id)
+    assert report.normalized_data["confidence"] == "medium"
+    assert report.raw_vt_response["domain"] == domain_vt_payload
     assert outcome.report_id == report.id
 
     status = sync_cache.get_task_status(task_id)
@@ -176,6 +182,76 @@ def test_force_refresh_bypasses_cache(
     assert outcome.cached is False
     assert len(vt.domain_calls) == 1
     assert len(reports) == 1
+
+
+def test_raw_vt_response_can_be_disabled(
+    sync_cache: SyncCache,
+    reports: list[TriageReport],
+    domain_vt_payload: dict[str, Any],
+) -> None:
+    settings = get_settings().model_copy(update={"store_raw_vt_response": False})
+    vt = FakeVirusTotal(domain_vt_payload)
+
+    _service(sync_cache, reports, settings=settings).execute(
+        task_id=str(uuid.uuid4()),
+        target="example.com",
+        target_type=TargetType.DOMAIN,
+        force_refresh=False,
+        attempt=0,
+        vt_client=vt,  # type: ignore[arg-type]
+    )
+
+    assert reports[0].raw_vt_response == {}
+    assert reports[0].normalized_data["verdict"] == "malicious"
+
+
+class DuplicateReportSession(FakeSession):
+    def __init__(self, existing: TriageReport) -> None:
+        super().__init__([])
+        self.existing = existing
+        self.rolled_back = False
+
+    def commit(self) -> None:
+        raise IntegrityError("INSERT INTO triage_reports", {}, Exception("duplicate task"))
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+    def scalar(self, _statement: object) -> TriageReport:
+        return self.existing
+
+
+def test_persist_report_reuses_the_row_for_a_duplicate_task(
+    sync_cache: SyncCache,
+    normalized_domain_result: TriageResult,
+) -> None:
+    task_id = uuid.uuid4()
+    existing = TriageReport(
+        id=uuid.uuid4(),
+        task_id=task_id,
+        target=normalized_domain_result.target,
+        target_type=normalized_domain_result.target_type.value,
+        risk_score=normalized_domain_result.risk_score,
+        verdict=normalized_domain_result.verdict.value,
+        raw_vt_response={},
+        normalized_data=normalized_domain_result.model_dump(mode="json"),
+        created_at=datetime.now(UTC),
+    )
+    session = DuplicateReportSession(existing)
+    service = TriageService(
+        cache=sync_cache,
+        session_factory=lambda: session,
+        settings=get_settings(),
+    )
+
+    report = service._persist_report(
+        normalized_domain_result,
+        {"data": {"id": "raw"}},
+        task_id=task_id,
+    )
+
+    assert report is existing
+    assert session.rolled_back is True
 
 
 def test_retry_and_failure_status_helpers(sync_cache: SyncCache) -> None:
