@@ -260,15 +260,62 @@ def test_verdict_only_scan_counts_changes_without_writing() -> None:
     )
     state = _state(list(rows))
 
-    changed = backfill_verdicts_only(
+    survey = backfill_verdicts_only(
         lambda: _FakeSession(state),  # type: ignore[arg-type]
         malicious_min_engines=2,
         suspicious_min_engines=1,
         batch_size=100,
     )
 
-    assert changed == 1
+    assert survey.changed == 1
+    assert survey.unassessable == 0
+    assert survey.is_exact is True
     assert state["update_calls"] == 0
+
+
+def test_verdict_survey_reports_unassessable_rows_separately() -> None:
+    """A malformed row cannot be compared, so it must not be silently dropped.
+
+    Counting only the rows that validate would present the drift as a total when
+    it is really a floor.
+    """
+
+    state = _state(
+        [
+            (uuid.uuid4(), {"risk_score": "broken"}),
+            (
+                uuid.uuid4(),
+                _stored(malicious=1, suspicious=0, total=90, risk_score=1.11, verdict="harmless"),
+            ),
+        ]
+    )
+
+    survey = backfill_verdicts_only(
+        lambda: _FakeSession(state),  # type: ignore[arg-type]
+        malicious_min_engines=2,
+        suspicious_min_engines=1,
+        batch_size=100,
+    )
+
+    assert survey.scanned == 2
+    assert survey.changed == 1
+    assert survey.unassessable == 1
+    assert survey.is_exact is False
+
+
+def test_backfill_report_exposes_unassessed_verdicts() -> None:
+    state = _state(
+        [
+            (uuid.uuid4(), {"risk_score": "broken"}),
+            (uuid.uuid4(), _stored(malicious=0, suspicious=20, total=90, risk_score=0.0)),
+        ]
+    )
+
+    report = _run(state)
+
+    assert report.skipped_malformed == 1
+    assert report.verdicts_unassessed == 1
+    assert report.as_dict()["verdicts_unassessed"] == 1
 
 
 def test_default_backfill_does_not_rewrite_verdicts() -> None:

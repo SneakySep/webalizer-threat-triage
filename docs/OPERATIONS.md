@@ -83,7 +83,10 @@ docker compose run --rm api python -m scripts.backfill_risk_scores \
 ```
 
 The summary always includes `verdicts_changed`, so verdict drift is visible even
-on a plain risk-score run.
+on a plain risk-score run. Malformed rows cannot be compared, so they are
+reported as `verdicts_unassessed` and the changed count is a floor rather than a
+total whenever that number is non-zero. Repair or accept those rows separately
+before treating the survey as complete.
 
 The raw VirusTotal payload is never modified, so the backfill is idempotent and
 can be re-run after a further rule change. Take a backup before a production

@@ -461,7 +461,10 @@ docker compose run --rm api python -m scripts.backfill_risk_scores \
 ```
 
 Every run reports `verdicts_changed` regardless of which flags were used, so
-the size of the verdict drift is always visible.
+the size of the verdict drift is always visible. Rows whose `normalized_data`
+does not validate cannot be compared at all, so they are reported separately as
+`verdicts_unassessed` and the changed count is a floor, not a total, whenever
+that number is non-zero.
 
 ## Observability
 

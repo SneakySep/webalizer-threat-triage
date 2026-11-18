@@ -75,18 +75,25 @@ def main() -> int:
         return 0
 
     if args.with_verdicts:
-        changed = backfill_verdicts_only(
+        survey = backfill_verdicts_only(
             SyncSessionLocal,
             malicious_min_engines=settings.malicious_min_engines,
             suspicious_min_engines=settings.suspicious_min_engines,
             batch_size=args.batch_size,
         )
         print(
-            f"{changed} report(s) would change verdict under the current thresholds "
-            f"(malicious>={settings.malicious_min_engines}, "
+            f"{survey.changed} report(s) would change verdict under the current "
+            f"thresholds (malicious>={settings.malicious_min_engines}, "
             f"suspicious>={settings.suspicious_min_engines})"
         )
-        if changed and not args.dry_run and not args.force_verdicts:
+        if not survey.is_exact:
+            print(
+                f"That count is a floor, not a total: {survey.unassessable} row(s) "
+                f"could not be compared because their normalized_data does not "
+                f"validate. Repair or accept those separately before treating the "
+                f"number as complete."
+            )
+        if survey.changed and not args.dry_run and not args.force_verdicts:
             print(
                 "Refusing to rewrite verdicts without confirmation: thresholds are "
                 "not recorded per report, so this cannot be verified as a repair.\n"
@@ -116,6 +123,11 @@ def main() -> int:
         print(
             f"{report.verdicts_changed} report(s) differ in verdict under the current "
             f"thresholds; verdicts {state}."
+        )
+    if report.verdicts_unassessed:
+        print(
+            f"{report.verdicts_unassessed} malformed row(s) could not be assessed for "
+            f"verdict drift, so the count above is a floor."
         )
     if args.dry_run and report.updated:
         print("Re-run without --dry-run to apply these changes.")

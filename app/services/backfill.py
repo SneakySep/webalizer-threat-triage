@@ -42,6 +42,18 @@ class BackfillReport:
     # not this run was allowed to write them.
     verdicts_changed: int = 0
 
+    @property
+    def verdicts_unassessed(self) -> int:
+        """Rows whose verdict could not be compared at all.
+
+        ``normalized_data`` did not validate, so there is no engine_stats to
+        recompute from and no way to know whether the verdict would have moved.
+        ``verdicts_changed`` is therefore a floor, not a total, whenever this is
+        non-zero.
+        """
+
+        return self.skipped_malformed
+
     def as_dict(self) -> dict[str, int]:
         return {
             "scanned": self.scanned,
@@ -49,7 +61,23 @@ class BackfillReport:
             "unchanged": self.unchanged,
             "skipped_malformed": self.skipped_malformed,
             "verdicts_changed": self.verdicts_changed,
+            "verdicts_unassessed": self.verdicts_unassessed,
         }
+
+
+@dataclass
+class VerdictSurvey:
+    """Result of counting verdict drift without writing anything."""
+
+    scanned: int = 0
+    changed: int = 0
+    unassessable: int = 0
+
+    @property
+    def is_exact(self) -> bool:
+        """True when every row could be compared, so ``changed`` is a total."""
+
+        return self.unassessable == 0
 
 
 def _recompute(
@@ -184,15 +212,19 @@ def backfill_verdicts_only(
     malicious_min_engines: int,
     suspicious_min_engines: int,
     batch_size: int = 500,
-) -> int:
+) -> VerdictSurvey:
     """Count rows whose verdict would change under the given thresholds.
 
     Verdict thresholds are not recorded per report, so a historical verdict
     cannot be proven to have used the current settings. This returns the count
     without writing, for an operator to review before deciding.
+
+    Rows whose ``normalized_data`` does not validate cannot be compared and are
+    reported as ``unassessable`` rather than folded into ``changed``, so the
+    count is never presented as exact when it is not.
     """
 
-    changed = 0
+    survey = VerdictSurvey()
     last_id: Any = None
 
     while True:
@@ -211,21 +243,24 @@ def backfill_verdicts_only(
 
             for report_id, normalized_data in rows:
                 last_id = report_id
+                survey.scanned += 1
                 recomputed = _recompute(
                     cast("dict[str, Any]", normalized_data),
                     malicious_min_engines=malicious_min_engines,
                     suspicious_min_engines=suspicious_min_engines,
                 )
                 if recomputed is None:
+                    survey.unassessable += 1
                     continue
                 if recomputed[1] != str(cast("dict[str, Any]", normalized_data).get("verdict", "")):
-                    changed += 1
+                    survey.changed += 1
 
-    return changed
+    return survey
 
 
 __all__ = [
     "BackfillReport",
+    "VerdictSurvey",
     "backfill_risk_scores",
     "backfill_verdicts_only",
     "count_reports",

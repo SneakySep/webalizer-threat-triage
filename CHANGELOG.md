@@ -14,6 +14,10 @@ All notable changes to this project are documented here.
 - `--force-verdicts` to apply a reviewed verdict rewrite, which the survey alone
   will not do. Every run now reports `verdicts_changed`, and the default
   risk-score path no longer rewrites stored verdicts as a side effect.
+- `verdicts_unassessed` on the backfill report and verdict survey, so rows whose
+  `normalized_data` does not validate are counted separately instead of being
+  dropped from the drift total. The changed count is reported as a floor when
+  any row could not be compared.
 - Request body size limit (`MAX_REQUEST_BODY_BYTES`, default 64 KiB) rejecting
   oversized payloads with 413 before the endpoint parses them.
 - Redis socket and connect timeouts so a stalled Redis cannot block every request
