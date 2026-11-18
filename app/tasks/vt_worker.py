@@ -30,7 +30,12 @@ from app.utils.helpers import compute_cache_key
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+redis_client = Redis.from_url(
+    settings.redis_url,
+    decode_responses=True,
+    socket_timeout=settings.redis_socket_timeout_seconds,
+    socket_connect_timeout=settings.redis_socket_connect_timeout_seconds,
+)
 cache = SyncCache(redis_client)
 
 
@@ -183,7 +188,7 @@ def _retry_delay(exc: VTError, attempt: int) -> float:
         return max(1.0, min(float(exc.retry_after), settings.vt_retry_max_seconds))
     exponential = settings.vt_retry_base_seconds * (2 ** max(0, attempt - 1))
     capped = min(exponential, settings.vt_retry_max_seconds)
-    return capped * random.uniform(0.8, 1.2)
+    return float(capped * random.uniform(0.8, 1.2))
 
 
 def _safe_mark_retrying(

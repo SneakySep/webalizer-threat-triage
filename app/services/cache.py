@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable
 from datetime import datetime
+from typing import Any, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError
@@ -134,8 +136,11 @@ class AsyncCache:
     async def increment_window(self, key: str, *, window_seconds: int) -> tuple[int, int]:
         """Increment a fixed-window counter and return (count, remaining_ttl)."""
 
-        result = await self.redis.eval(_RATE_WINDOW_SCRIPT, 1, key, window_seconds)
-        count, ttl = result
+        result = await cast(
+            "Awaitable[Any]",
+            self.redis.eval(_RATE_WINDOW_SCRIPT, 1, key, str(window_seconds)),
+        )
+        count, ttl = cast("list[Any]", result)
         return int(count), max(0, int(ttl))
 
     async def set_if_absent(self, key: str, *, ttl_seconds: int) -> bool:
@@ -159,14 +164,18 @@ class AsyncCache:
         return bool(result)
 
     async def get_lock_owner(self, cache_key: str) -> str | None:
-        return await self.redis.get(lock_key(cache_key))
+        value = await self.redis.get(lock_key(cache_key))
+        return cast("str | None", value)
 
     async def release_lock(self, cache_key: str, owner: str) -> bool:
-        result = await self.redis.eval(
-            _RELEASE_LOCK_SCRIPT,
-            1,
-            lock_key(cache_key),
-            owner,
+        result = await cast(
+            "Awaitable[Any]",
+            self.redis.eval(
+                _RELEASE_LOCK_SCRIPT,
+                1,
+                lock_key(cache_key),
+                owner,
+            ),
         )
         return bool(result)
 
@@ -185,7 +194,7 @@ class SyncCache:
 
     def get_cached(self, target_type: TargetType, target: str) -> CachedTriage | None:
         key = compute_cache_key(target_type, target)
-        raw = self.redis.get(key)
+        raw = cast("str | None", self.redis.get(key))
         cached = _validate_cached(raw)
         if raw is not None and cached is None:
             self.redis.delete(key)
@@ -196,7 +205,7 @@ class SyncCache:
         self.redis.set(key, cached.model_dump_json(), ex=ttl_seconds)
 
     def get_task_status(self, task_id: str | UUID) -> TaskRecord | None:
-        raw = self.redis.get(status_key(task_id))
+        raw = cast("str | None", self.redis.get(status_key(task_id)))
         return _validate_status(raw)
 
     def set_task_status(self, record: TaskRecord, *, ttl_seconds: int) -> None:
@@ -220,7 +229,7 @@ class SyncCache:
         )
 
     def get_lock_owner(self, cache_key: str) -> str | None:
-        return self.redis.get(lock_key(cache_key))
+        return cast("str | None", self.redis.get(lock_key(cache_key)))
 
     def release_lock(self, cache_key: str, owner: str) -> bool:
         result = self.redis.eval(

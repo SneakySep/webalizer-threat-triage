@@ -21,7 +21,11 @@ from app.config import get_settings
 from app.database import check_database, close_database
 from app.errors import register_exception_handlers
 from app.metrics import CONTENT_TYPE_LATEST, generate_latest
-from app.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.middleware import (
+    BodySizeLimitMiddleware,
+    RequestContextMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.services.cache import AsyncCache
 
 logger = logging.getLogger(__name__)
@@ -35,7 +39,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    redis_client = AsyncRedis.from_url(settings.redis_url, decode_responses=True)
+    redis_client = AsyncRedis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_timeout=settings.redis_socket_timeout_seconds,
+        socket_connect_timeout=settings.redis_socket_connect_timeout_seconds,
+    )
     app.state.cache = AsyncCache(redis_client)
     logger.info("Threat triage API started")
     try:
@@ -75,6 +84,12 @@ def create_app() -> FastAPI:
         environment=settings.environment,
     )
     application.add_middleware(RequestContextMiddleware)
+    # Added last so it runs first: an oversized body is rejected before any
+    # other middleware or endpoint does work on it.
+    application.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=settings.max_request_body_bytes,
+    )
 
     register_exception_handlers(application)
     application.include_router(api_router, prefix=settings.api_v1_prefix)

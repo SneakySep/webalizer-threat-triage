@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_cache, get_session, get_settings, get_task_dispatcher
 from app.config import Settings
 from app.errors import AppError
+from app.metrics import SCAN_OUTCOMES
 from app.models.triage_report import TriageReport
 from app.schemas.triage import (
     ReportListResponse,
@@ -89,6 +90,7 @@ async def scan_target(
         if not payload.force_refresh:
             cached = await cache.get_cached(parsed.target_type, parsed.target)
             if cached is not None:
+                SCAN_OUTCOMES.labels("cache_hit").inc()
                 response.status_code = http_status.HTTP_200_OK
                 return ScanResponse(
                     task_id=cached.task_id,
@@ -108,6 +110,7 @@ async def scan_target(
         if not acquired:
             existing = await _existing_task(cache, cache_key)
             if existing is not None:
+                SCAN_OUTCOMES.labels("deduplicated").inc()
                 response.status_code = http_status.HTTP_202_ACCEPTED
                 return ScanResponse(
                     task_id=existing.task_id,
@@ -138,6 +141,7 @@ async def scan_target(
             )
             if not allowed:
                 retry_after = max(1, await cache.get_ttl(cooldown_key))
+                SCAN_OUTCOMES.labels("force_refresh_cooldown").inc()
                 raise AppError(
                     429,
                     "FORCE_REFRESH_COOLDOWN",
@@ -154,6 +158,7 @@ async def scan_target(
             if cached is not None:
                 await _release_scan_lock(cache, cache_key, task_id)
                 lock_held = False
+                SCAN_OUTCOMES.labels("cache_hit").inc()
                 response.status_code = http_status.HTTP_200_OK
                 return ScanResponse(
                     task_id=cached.task_id,
@@ -197,6 +202,7 @@ async def scan_target(
             ) from exc
 
         response.status_code = http_status.HTTP_202_ACCEPTED
+        SCAN_OUTCOMES.labels("queued").inc()
         return ScanResponse(
             task_id=task_id,
             status=TaskState.QUEUED,
@@ -461,6 +467,7 @@ async def _enforce_scan_rate_limit(
         )
         if count > limit:
             retry_after = max(1, ttl)
+            SCAN_OUTCOMES.labels("rate_limited").inc()
             raise AppError(
                 429,
                 "RATE_LIMITED",

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models.triage_report import TriageReport
@@ -67,7 +68,7 @@ def prune_reports(
                 .execution_options(synchronize_session=False)
             )
             session.commit()
-            deleted = int(result.rowcount or 0)
+            deleted = int(cast("CursorResult[object]", result).rowcount or 0)
             deleted_total += max(0, deleted)
             if deleted < batch_size:
                 break

@@ -35,3 +35,6 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# Perch workspace state (machine-specific paths)
+.perch/

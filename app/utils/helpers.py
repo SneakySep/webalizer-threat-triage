@@ -105,14 +105,14 @@ def normalize_target(raw_target: str) -> ParsedTarget:
     if "%" in hostname:
         raise InvalidTargetError("URL hostname must not contain zone identifiers")
 
-    is_ip = False
+    ip_value: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
     try:
         ip_value = ipaddress.ip_address(hostname)
-        is_ip = True
     except ValueError:
         ip_value = None
+    is_ip = ip_value is not None
 
-    if is_ip:
+    if ip_value is not None:
         if not ip_value.is_global:
             raise InvalidTargetError("private, loopback, or reserved IP targets are not allowed")
         normalized_host = ip_value.compressed

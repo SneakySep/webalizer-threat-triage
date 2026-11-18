@@ -50,6 +50,9 @@ jobs:
       - name: Ruff format check
         run: ruff format --check app tests alembic scripts
 
+      - name: Mypy type check
+        run: mypy
+
       - name: Check browser JavaScript syntax
         run: node --check app/static/app.js
 

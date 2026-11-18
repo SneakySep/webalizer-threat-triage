@@ -592,3 +592,71 @@ async def test_optional_api_key_protection(api_harness: ApiHarness) -> None:
         headers={"X-API-Key": "secret-key"},
     )
     assert authorized.status_code == 202
+
+
+def test_openapi_documents_the_api_key_scheme(api_harness: ApiHarness) -> None:
+    """Swagger needs a securityScheme to render an Authorize button."""
+
+    spec = api_harness.app.openapi()
+
+    scheme = spec["components"]["securitySchemes"]["ApiKeyAuth"]
+    assert scheme["type"] == "apiKey"
+    assert scheme["in"] == "header"
+    assert scheme["name"] == "X-API-Key"
+
+
+def test_openapi_marks_every_triage_endpoint_as_key_protected(
+    api_harness: ApiHarness,
+) -> None:
+    spec = api_harness.app.openapi()
+
+    protected = {
+        (method.upper(), path)
+        for path, operations in spec["paths"].items()
+        for method, operation in operations.items()
+        if isinstance(operation, dict) and operation.get("security")
+    }
+    assert protected == {
+        ("POST", "/api/v1/triage/scan"),
+        ("GET", "/api/v1/triage/status/{task_id}"),
+        ("GET", "/api/v1/triage/report/{report_id}"),
+        ("GET", "/api/v1/triage/reports"),
+        ("DELETE", "/api/v1/triage/reports/{report_id}"),
+    }
+    for _method, path in protected:
+        operations = spec["paths"][path]
+        for operation in operations.values():
+            if isinstance(operation, dict):
+                assert operation["security"] == [{"ApiKeyAuth": []}]
+
+
+async def test_missing_api_key_returns_the_app_error_envelope(
+    api_harness: ApiHarness,
+) -> None:
+    """auto_error=False must keep our 401 shape, not FastAPI's default."""
+
+    secure_settings = load_settings().model_copy(update={"triage_api_key": SecretStr("secret-key")})
+    api_harness.app.dependency_overrides[get_settings] = lambda: secure_settings
+
+    response = await api_harness.client.post(
+        "/api/v1/triage/scan",
+        json={"target": "secured.example"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHORIZED"
+    assert response.headers["www-authenticate"] == "ApiKey"
+
+
+async def test_blank_api_key_is_rejected(api_harness: ApiHarness) -> None:
+    secure_settings = load_settings().model_copy(update={"triage_api_key": SecretStr("secret-key")})
+    api_harness.app.dependency_overrides[get_settings] = lambda: secure_settings
+
+    response = await api_harness.client.post(
+        "/api/v1/triage/scan",
+        json={"target": "secured.example"},
+        headers={"X-API-Key": ""},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHORIZED"

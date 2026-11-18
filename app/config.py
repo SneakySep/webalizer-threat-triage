@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/2"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
+    # Without these a stalled Redis blocks every request handler indefinitely,
+    # including /health/ready, so the container never reports unhealthy.
+    redis_socket_timeout_seconds: float = Field(default=5.0, gt=0)
+    redis_socket_connect_timeout_seconds: float = Field(default=5.0, gt=0)
 
     # VirusTotal API v3
     vt_api_key: SecretStr = SecretStr("")
@@ -89,6 +93,7 @@ class Settings(BaseSettings):
     inflight_lock_ttl_seconds: int = Field(default=3_600, ge=60)
 
     # Abuse protection and data lifecycle
+    max_request_body_bytes: int = Field(default=65_536, ge=1_024, le=10_485_760)
     scan_rate_limit_per_minute: int = Field(default=30, ge=1, le=600)
     scan_rate_limit_per_hour: int = Field(default=300, ge=1, le=100_000)
     force_refresh_cooldown_seconds: int = Field(default=300, ge=0)

@@ -9,6 +9,24 @@ ignore = ["B008"]
 [tool.ruff.lint.per-file-ignores]
 "alembic/versions/*.py" = ["E501"]
 
+[tool.mypy]
+python_version = "3.11"
+files = ["app", "scripts"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+no_implicit_optional = true
+strict_equality = true
+check_untyped_defs = true
+
+# Celery ships no py.typed marker or stubs, so its imports cannot be checked.
+# The exemption is scoped to those packages only; everything else is analysed.
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
