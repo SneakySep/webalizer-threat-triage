@@ -448,7 +448,20 @@ no longer validates are counted and skipped rather than repaired.
 Verdicts are left alone by default. The verdict thresholds in force when a row
 was written are not recorded, so rewriting historical verdicts is a judgement
 call rather than a repair. `--with-verdicts` reports how many rows would change
-and refuses to write them automatically.
+without writing them; applying the change needs `--force-verdicts` as well,
+after the dry run has been reviewed:
+
+```bash
+# Survey only: reports the count, writes nothing
+docker compose run --rm api python -m scripts.backfill_risk_scores --with-verdicts
+
+# Apply risk scores and verdicts together, deliberately
+docker compose run --rm api python -m scripts.backfill_risk_scores \
+  --with-verdicts --force-verdicts
+```
+
+Every run reports `verdicts_changed` regardless of which flags were used, so
+the size of the verdict drift is always visible.
 
 ## Observability
 

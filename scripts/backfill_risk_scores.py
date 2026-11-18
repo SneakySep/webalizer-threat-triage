@@ -13,7 +13,9 @@ Run with::
 The dry run computes the same numbers and reports what would change without
 writing anything. Verdicts are left alone unless --with-verdicts is passed: the
 verdict thresholds in force when a row was written are not recorded, so
-rewriting historical verdicts is a judgement call, not a repair.
+rewriting historical verdicts is a judgement call, not a repair. Because of
+that, --with-verdicts only reports the impact; applying it needs
+--force-verdicts as well, after the dry run has been reviewed.
 """
 
 from __future__ import annotations
@@ -51,10 +53,21 @@ def main() -> int:
             "every stored report was written with these same thresholds."
         ),
     )
+    parser.add_argument(
+        "--force-verdicts",
+        action="store_true",
+        help=(
+            "Confirm that rewriting historical verdicts is intended. Required "
+            "alongside --with-verdicts, and only accepted after a dry run has "
+            "shown how many rows would change."
+        ),
+    )
     args = parser.parse_args()
 
     if args.batch_size < 1:
         parser.error("--batch-size must be at least 1")
+    if args.force_verdicts and not args.with_verdicts:
+        parser.error("--force-verdicts only applies together with --with-verdicts")
 
     total = count_reports(SyncSessionLocal)
     print(f"{total} stored report(s) found")
@@ -73,11 +86,12 @@ def main() -> int:
             f"(malicious>={settings.malicious_min_engines}, "
             f"suspicious>={settings.suspicious_min_engines})"
         )
-        if changed and not args.dry_run:
+        if changed and not args.dry_run and not args.force_verdicts:
             print(
-                "Refusing to rewrite verdicts automatically: thresholds are not "
-                "recorded per report. Re-run with --dry-run to review, then update "
-                "the affected rows deliberately."
+                "Refusing to rewrite verdicts without confirmation: thresholds are "
+                "not recorded per report, so this cannot be verified as a repair.\n"
+                "Review the dry run above, then re-run with --with-verdicts "
+                "--force-verdicts to apply it deliberately."
             )
             return 1
 
@@ -87,6 +101,7 @@ def main() -> int:
         suspicious_min_engines=settings.suspicious_min_engines,
         batch_size=args.batch_size,
         dry_run=args.dry_run,
+        write_verdicts=args.with_verdicts and args.force_verdicts,
     )
 
     verb = "would be updated" if args.dry_run else "updated"
@@ -95,6 +110,13 @@ def main() -> int:
         f"{report.unchanged} already correct, "
         f"{report.skipped_malformed} skipped as malformed"
     )
+    if report.verdicts_changed:
+        applied = args.with_verdicts and args.force_verdicts
+        state = "rewritten" if applied else "left unchanged"
+        print(
+            f"{report.verdicts_changed} report(s) differ in verdict under the current "
+            f"thresholds; verdicts {state}."
+        )
     if args.dry_run and report.updated:
         print("Re-run without --dry-run to apply these changes.")
     return 0

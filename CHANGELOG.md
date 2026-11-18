@@ -11,6 +11,9 @@ All notable changes to this project are documented here.
   with a dry-run mode, batched writes, and malformed rows skipped and counted.
 - Verdict-change survey (`--with-verdicts`) that reports how many stored reports
   would change verdict under the current thresholds without rewriting them.
+- `--force-verdicts` to apply a reviewed verdict rewrite, which the survey alone
+  will not do. Every run now reports `verdicts_changed`, and the default
+  risk-score path no longer rewrites stored verdicts as a side effect.
 - Request body size limit (`MAX_REQUEST_BODY_BYTES`, default 64 KiB) rejecting
   oversized payloads with 413 before the endpoint parses them.
 - Redis socket and connect timeouts so a stalled Redis cannot block every request

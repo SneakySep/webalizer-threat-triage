@@ -73,8 +73,17 @@ them through.
 Verdicts are not rewritten by default. The thresholds in force when a report
 was written are not stored, so a historical verdict cannot be proven to have
 used the current settings. `--with-verdicts` reports the number of rows that
-would change and then refuses to write them, by design. Review that count and
-update affected rows deliberately if the change is warranted.
+would change and writes nothing. Applying it requires `--force-verdicts` as
+well, after reviewing that count:
+
+```bash
+docker compose run --rm api python -m scripts.backfill_risk_scores --with-verdicts
+docker compose run --rm api python -m scripts.backfill_risk_scores \
+  --with-verdicts --force-verdicts
+```
+
+The summary always includes `verdicts_changed`, so verdict drift is visible even
+on a plain risk-score run.
 
 The raw VirusTotal payload is never modified, so the backfill is idempotent and
 can be re-run after a further rule change. Take a backup before a production

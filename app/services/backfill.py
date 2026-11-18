@@ -38,6 +38,9 @@ class BackfillReport:
     updated: int = 0
     unchanged: int = 0
     skipped_malformed: int = 0
+    # Rows whose verdict would differ under the current thresholds, whether or
+    # not this run was allowed to write them.
+    verdicts_changed: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -45,6 +48,7 @@ class BackfillReport:
             "updated": self.updated,
             "unchanged": self.unchanged,
             "skipped_malformed": self.skipped_malformed,
+            "verdicts_changed": self.verdicts_changed,
         }
 
 
@@ -82,11 +86,19 @@ def backfill_risk_scores(
     suspicious_min_engines: int = 1,
     batch_size: int = 500,
     dry_run: bool = False,
+    write_verdicts: bool = False,
 ) -> BackfillReport:
-    """Recompute risk_score (and optionally verdict) for every stored report.
+    """Recompute risk_score for every stored report.
 
     ``dry_run`` computes the same numbers and reports what would change without
     writing anything, so the impact can be reviewed before it is applied.
+
+    ``write_verdicts`` controls whether the recomputed verdict is stored. It is
+    off by default: the thresholds in force when a report was written are not
+    recorded, so a historical verdict cannot be proven to have used the current
+    settings. With it off, a verdict is left exactly as stored and only the risk
+    score is corrected. Rows whose verdict would differ are still counted in
+    ``verdicts_changed`` so the impact is visible before anyone opts in.
     """
 
     if batch_size < 1:
@@ -128,7 +140,14 @@ def backfill_risk_scores(
                 stored_risk = float(stored.get("risk_score", 0))
                 stored_verdict = str(stored.get("verdict", ""))
 
-                if new_risk == stored_risk and new_verdict == stored_verdict:
+                verdict_differs = new_verdict != stored_verdict
+                if verdict_differs:
+                    report.verdicts_changed += 1
+
+                risk_differs = new_risk != stored_risk
+                # A verdict-only difference is not a reason to touch the row
+                # unless verdicts were explicitly opted into.
+                if not risk_differs and not (write_verdicts and verdict_differs):
                     report.unchanged += 1
                     continue
 
@@ -138,15 +157,18 @@ def backfill_risk_scores(
 
                 patched = dict(stored)
                 patched["risk_score"] = new_risk
-                patched["verdict"] = new_verdict
+                values: dict[str, Any] = {
+                    "risk_score": Decimal(str(new_risk)),
+                    "normalized_data": patched,
+                }
+                if write_verdicts:
+                    patched["verdict"] = new_verdict
+                    values["verdict"] = new_verdict
+
                 session.execute(
                     update(TriageReport)
                     .where(TriageReport.id == report_id)
-                    .values(
-                        risk_score=Decimal(str(new_risk)),
-                        verdict=new_verdict,
-                        normalized_data=patched,
-                    )
+                    .values(**values)
                     .execution_options(synchronize_session=False)
                 )
 

@@ -145,7 +145,8 @@ def test_backfill_writes_the_corrected_value_to_both_the_column_and_the_blob() -
 
     params = state["update_params"][0]
     assert float(params["risk_score"]) == 11.11
-    assert params["verdict"] == "suspicious"
+    # Verdicts are not written unless explicitly opted into.
+    assert "verdict" not in params
     blob = params["normalized_data"]
     assert blob["risk_score"] == 11.11
     assert blob["verdict"] == "suspicious"
@@ -268,3 +269,96 @@ def test_verdict_only_scan_counts_changes_without_writing() -> None:
 
     assert changed == 1
     assert state["update_calls"] == 0
+
+
+def test_default_backfill_does_not_rewrite_verdicts() -> None:
+    """The risk-score path must not silently rewrite a historical verdict.
+
+    The CLI refuses to rewrite verdicts because the thresholds in force when a
+    report was written are not recorded. A risk-score backfill that wrote the
+    recomputed verdict anyway would make that refusal meaningless.
+    """
+
+    state = _state(
+        [
+            (
+                uuid.uuid4(),
+                _stored(malicious=1, suspicious=0, total=90, risk_score=0.0, verdict="harmless"),
+            )
+        ]
+    )
+
+    report = _run(state, malicious_min_engines=2, suspicious_min_engines=1)
+
+    # The risk score is corrected, but the stored verdict is preserved.
+    assert report.updated == 1
+    assert report.verdicts_changed == 1
+    params = state["update_params"][0]
+    assert "verdict" not in params
+    assert params["normalized_data"]["verdict"] == "harmless"
+
+
+def test_backfill_writes_verdicts_only_when_explicitly_enabled() -> None:
+    state = _state(
+        [
+            (
+                uuid.uuid4(),
+                _stored(malicious=1, suspicious=0, total=90, risk_score=0.0, verdict="harmless"),
+            )
+        ]
+    )
+
+    report = _run(
+        state,
+        malicious_min_engines=2,
+        suspicious_min_engines=1,
+        write_verdicts=True,
+    )
+
+    assert report.updated == 1
+    assert report.verdicts_changed == 1
+    params = state["update_params"][0]
+    assert params["verdict"] == "suspicious"
+    assert params["normalized_data"]["verdict"] == "suspicious"
+
+
+def test_verdict_only_difference_is_unchanged_when_verdicts_are_off() -> None:
+    """A row needing no risk-score change must not be rewritten just for a verdict."""
+
+    state = _state(
+        [
+            (
+                uuid.uuid4(),
+                _stored(malicious=1, suspicious=0, total=90, risk_score=1.11, verdict="harmless"),
+            )
+        ]
+    )
+
+    report = _run(state, malicious_min_engines=2, suspicious_min_engines=1)
+
+    assert report.unchanged == 1
+    assert report.updated == 0
+    assert state["update_calls"] == 0
+
+
+def test_dry_run_counts_verdict_changes_without_writing() -> None:
+    state = _state(
+        [
+            (
+                uuid.uuid4(),
+                _stored(malicious=1, suspicious=0, total=90, risk_score=1.11, verdict="harmless"),
+            )
+        ]
+    )
+
+    report = _run(
+        state,
+        malicious_min_engines=2,
+        suspicious_min_engines=1,
+        dry_run=True,
+        write_verdicts=True,
+    )
+
+    assert report.verdicts_changed == 1
+    assert state["update_calls"] == 0
+    assert state["commits"] == 0
