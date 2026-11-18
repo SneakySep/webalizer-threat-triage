@@ -94,6 +94,7 @@ app/
   services/
     cache.py                    Redis cache, task state, locks
     dispatcher.py               Celery task publish abstraction
+    backfill.py                 Recompute derived fields after a scoring change
     normalizer.py               VirusTotal JSON -> TriageResult
     rate_limit.py               global Redis token bucket
     retention.py                batched report pruning
@@ -107,6 +108,7 @@ alembic/                        database migrations
 docs/OPERATIONS.md              Deployment and incident-response runbook
 scripts/
   prune_reports.py              Delete reports past the retention window
+  backfill_risk_scores.py       Recompute stored risk scores after a rule change
   verify_vt_key.py              VirusTotal key/connectivity preflight
   enable-live-scans.ps1         One-command live-scan setup (Windows)
 tests/
@@ -423,6 +425,30 @@ default is `true` for compatibility with existing report responses.
 
 The Compose stack runs a `beat` service that prunes expired reports daily at
 03:15 UTC. The manual commands above remain available for one-off cleanup.
+
+### Recomputing stored risk scores
+
+`risk_score` is stored twice: as a column and inside the `normalized_data`
+blob that the report endpoints actually read. Changing the scoring rules does
+not rewrite history, so reports written under older rules keep their old value
+until they are recomputed:
+
+```bash
+# Preview what would change, without writing
+docker compose run --rm api python -m scripts.backfill_risk_scores --dry-run
+
+# Apply the recomputed risk scores
+docker compose run --rm api python -m scripts.backfill_risk_scores
+```
+
+Only derived fields are touched. The raw VirusTotal payload is never modified,
+so a backfill is repeatable from stored evidence. Rows whose `normalized_data`
+no longer validates are counted and skipped rather than repaired.
+
+Verdicts are left alone by default. The verdict thresholds in force when a row
+was written are not recorded, so rewriting historical verdicts is a judgement
+call rather than a repair. `--with-verdicts` reports how many rows would change
+and refuses to write them automatically.
 
 ## Observability
 

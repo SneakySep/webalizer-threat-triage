@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Risk-score backfill (`scripts.backfill_risk_scores`) that recomputes both the
+  `risk_score` column and the `normalized_data` blob after a scoring-rule change,
+  with a dry-run mode, batched writes, and malformed rows skipped and counted.
+- Verdict-change survey (`--with-verdicts`) that reports how many stored reports
+  would change verdict under the current thresholds without rewriting them.
+- Request body size limit (`MAX_REQUEST_BODY_BYTES`, default 64 KiB) rejecting
+  oversized payloads with 413 before the endpoint parses them.
+- Redis socket and connect timeouts so a stalled Redis cannot block every request
+  handler, including `/health/ready`.
+- Swagger UI Authorize support for the API key, with the key declared as a
+  security scheme instead of a plain header.
+- Bounded Prometheus path labels: unmatched paths collapse to `{unmatched}` so
+  random scanner traffic cannot mint unbounded time series.
+
+### Changed
+
+- API key comparison now evaluates every configured key without short-circuiting,
+  so response timing does not reveal which key matched.
+- Missing `X-API-Key` returns the app's own 401 envelope with
+  `WWW-Authenticate: ApiKey`.
+
+### Documentation
+
+- Operations runbook and README cover the risk-score backfill and its dry-run and
+  verdict-survey behaviour.
+
 ## [1.1.0] - 2026-11-13
 
 ### Added

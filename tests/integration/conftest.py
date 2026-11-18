@@ -55,7 +55,7 @@ def sample_result() -> TriageResult:
     return TriageResult(
         target="integration.example",
         target_type=TargetType.DOMAIN,
-        risk_score=2.22,
+        risk_score=2.78,
         detection_ratio="2/90",
         verdict=Verdict.MALICIOUS,
         confidence=VerdictConfidence.MEDIUM,

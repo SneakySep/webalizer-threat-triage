@@ -24,7 +24,8 @@ def test_domain_result_normalization(domain_vt_payload: dict[str, Any]) -> None:
     assert result.engine_stats.suspicious == 1
     assert result.engine_stats.timeout == 2
     assert result.engine_stats.total == 90
-    assert result.risk_score == 2.22
+    # 2 malicious + 0.5 * 1 suspicious = 2.5 of 90 engines.
+    assert result.risk_score == 2.78
     assert result.detection_ratio == "2/90"
     assert result.verdict is Verdict.MALICIOUS
     assert result.confidence is VerdictConfidence.MEDIUM
@@ -55,7 +56,8 @@ def test_url_result_normalization(
 
     assert result.target_type == "url"
     assert result.engine_stats.total == 90
-    assert result.risk_score == 0.0
+    # One suspicious flag at half weight out of 90 engines.
+    assert result.risk_score == 0.56
     assert result.detection_ratio == "0/90"
     assert result.verdict is Verdict.SUSPICIOUS
     assert result.confidence is VerdictConfidence.LOW
@@ -138,4 +140,57 @@ def test_verdict_thresholds_are_configurable(domain_vt_payload: dict[str, Any]) 
         malicious_min_engines=3,
         suspicious_min_engines=2,
     )
-    assert result.verdict is Verdict.HARMLESS
+    # 2 malicious and 1 suspicious are both below the raised thresholds. A real
+    # detection must never be reported as harmless.
+    assert result.verdict is Verdict.SUSPICIOUS
+    assert result.confidence is VerdictConfidence.LOW
+
+
+def test_sub_threshold_detection_is_never_harmless() -> None:
+    """A single flag below a raised threshold is inconclusive, not clean."""
+
+    payload = {
+        "data": {
+            "attributes": {
+                "last_analysis_stats": {
+                    "malicious": 1,
+                    "suspicious": 0,
+                    "undetected": 80,
+                    "harmless": 9,
+                },
+                "last_analysis_results": {},
+                "categories": {},
+            }
+        }
+    }
+
+    result = normalize_domain_result("example.com", payload, malicious_min_engines=2)
+
+    assert result.verdict is Verdict.SUSPICIOUS
+    # The old fallthrough reported this as HARMLESS with HIGH confidence.
+    assert result.confidence is not VerdictConfidence.HIGH
+
+
+def test_suspicious_detections_move_the_risk_score() -> None:
+    """A suspicious-heavy target must not render as 0% risk."""
+
+    payload = {
+        "data": {
+            "attributes": {
+                "last_analysis_stats": {
+                    "malicious": 0,
+                    "suspicious": 20,
+                    "undetected": 60,
+                    "harmless": 10,
+                },
+                "last_analysis_results": {},
+                "categories": {},
+            }
+        }
+    }
+
+    result = normalize_domain_result("example.com", payload)
+
+    assert result.verdict is Verdict.SUSPICIOUS
+    assert result.risk_score > 0.0
+    assert result.detection_ratio == "0/90"

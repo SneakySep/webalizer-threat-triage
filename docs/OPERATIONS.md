@@ -50,6 +50,36 @@ docker compose run --rm api python -m scripts.prune_reports
 Prune in batches for large tables. Take a backup before a manual run if the
 reports are still needed for an investigation.
 
+## Recomputing stored risk scores
+
+`risk_score` lives in two places: the column and the `normalized_data` blob.
+The report endpoints read the blob, so a backfill that only updated the column
+would leave the API serving the old number. `scripts.backfill_risk_scores`
+updates both.
+
+Run the dry run first. It computes the same numbers and reports what would
+change without writing anything:
+
+```bash
+docker compose run --rm api python -m scripts.backfill_risk_scores --dry-run
+docker compose run --rm api python -m scripts.backfill_risk_scores
+```
+
+Use `--batch-size` to control rows read per transaction. Rows whose
+`normalized_data` no longer validates against `TriageResult` are counted as
+`skipped_malformed` and left untouched; investigate those rather than forcing
+them through.
+
+Verdicts are not rewritten by default. The thresholds in force when a report
+was written are not stored, so a historical verdict cannot be proven to have
+used the current settings. `--with-verdicts` reports the number of rows that
+would change and then refuses to write them, by design. Review that count and
+update affected rows deliberately if the change is warranted.
+
+The raw VirusTotal payload is never modified, so the backfill is idempotent and
+can be re-run after a further rule change. Take a backup before a production
+run, as with any bulk write.
+
 ## Backups
 
 PostgreSQL is the source of truth for stored reports. Back it up on a schedule

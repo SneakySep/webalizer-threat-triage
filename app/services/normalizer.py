@@ -20,6 +20,11 @@ _DNS_TYPES = {"A", "AAAA", "MX", "NS"}
 _DNS_ORDER = {"A": 0, "AAAA": 1, "MX": 2, "NS": 3}
 _MX_VALUE_RE = re.compile(r"^(\d+)\s+(.+)$")
 
+# Suspicious flags carry real vendor concern but are not confirmed detections, so
+# they contribute at half weight. Without this a target flagged suspicious by 20
+# engines would report a 0.0 risk score next to a "suspicious" verdict.
+_SUSPICIOUS_RISK_WEIGHT = 0.5
+
 
 def normalize_url_result(
     target: str,
@@ -97,7 +102,7 @@ def _build_result(
     malicious_min_engines: int,
     suspicious_min_engines: int,
 ) -> TriageResult:
-    risk_score = round((stats.malicious / stats.total) * 100, 2) if stats.total > 0 else 0.0
+    risk_score = _calculate_risk_score(stats)
     detection_ratio = f"{stats.malicious}/{stats.total}"
     verdict = _calculate_verdict(
         stats,
@@ -159,6 +164,15 @@ def _count(value: Any) -> int:
         return 0
 
 
+def _calculate_risk_score(stats: EngineStats) -> float:
+    """Blend malicious and suspicious detections into a 0-100 risk score."""
+
+    if stats.total <= 0:
+        return 0.0
+    weighted = stats.malicious + (_SUSPICIOUS_RISK_WEIGHT * stats.suspicious)
+    return round(min(100.0, (weighted / stats.total) * 100), 2)
+
+
 def _calculate_verdict(
     stats: EngineStats,
     *,
@@ -170,6 +184,11 @@ def _calculate_verdict(
     if stats.malicious >= max(1, malicious_min_engines):
         return Verdict.MALICIOUS
     if stats.suspicious >= max(1, suspicious_min_engines):
+        return Verdict.SUSPICIOUS
+    # Any flag below a raised threshold is inconclusive, never clean. Falling
+    # through to HARMLESS here would report a real detection as harmless, and
+    # _calculate_confidence would then label that verdict HIGH.
+    if stats.malicious > 0 or stats.suspicious > 0:
         return Verdict.SUSPICIOUS
     if stats.harmless + stats.undetected > 0:
         return Verdict.HARMLESS
